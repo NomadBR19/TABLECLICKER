@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Table Clicker</title>
+  <link rel="stylesheet" href="styles.css?v=15">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <section>
+        <h1>Table Clicker</h1>
+      </section>
+      <section class="identity">
+        <input id="playerName" maxlength="18" placeholder="Pseudo">
+      </section>
+    </header>
+
+    <section class="stats-strip">
+      <article>
+        <span>Jetons</span>
+        <strong id="chips">0</strong>
+      </article>
+      <article>
+        <span>Revenus</span>
+        <strong id="income">0/s</strong>
+      </article>
+      <article>
+        <span>Prestige</span>
+        <strong id="prestige">x1.00</strong>
+      </article>
+      <article>
+        <span>Table</span>
+        <strong id="tableStatus">Reseau</strong>
+      </article>
+    </section>
+
+    <section class="layout">
+      <section class="side-stack">
+        <aside class="panel click-panel">
+          <div class="meter">
+            <div id="heatFill"></div>
+          </div>
+          <button id="mainClick" class="chip-button" aria-label="Gagner des jetons">
+            <span id="clickValue">+1</span>
+          </button>
+          <div class="quick-actions">
+            <button id="prestigeButton">Prestige</button>
+            <button id="saveButton">Sauver</button>
+            <button id="resetButton">Reset</button>
+          </div>
+          <p id="ticker" class="ticker">La table attend ton premier coup.</p>
+        </aside>
+
+        <section class="panel upgrades-panel">
+          <div class="section-head">
+            <h2>Ameliorations</h2>
+            <span id="upgradeHint">Autonomie constante</span>
+          </div>
+          <div id="upgrades" class="upgrade-list"></div>
+        </section>
+      </section>
+
+      <section class="games-panel">
+        <div id="soloGames" class="games-grid casino-view active">
+          <section id="roulette" class="game-view game-card">
+            <div class="game-title">
+              <h3>Roulette</h3>
+              <span>Annoncee a la table</span>
+            </div>
+            <div class="roulette-board">
+              <div id="wheel" class="wheel" data-color="idle">
+                <div class="wheel-ring"></div>
+                <div class="wheel-result">
+                  <strong id="wheelNumber">?</strong>
+                  <span id="wheelColor">Pret</span>
+                </div>
+              </div>
+              <div class="roulette-controls">
+                <div class="stake-box">
+                  <span>Mise</span>
+                  <strong id="rouletteStake">25</strong>
+                </div>
+                <div class="stake-buttons" data-stake-game="roulette">
+                  <button data-stake-add="25">+25</button>
+                  <button data-stake-add="50">+50</button>
+                  <button data-stake-add="100">+100</button>
+                  <button data-stake-add="500">+500</button>
+                  <button data-stake-add="1000">+1000</button>
+                  <button data-stake-all>All in</button>
+                  <button data-stake-add="-25">-25</button>
+                  <button data-stake-clear>Vider</button>
+                </div>
+                <div class="choice-buttons">
+                  <button data-roulette-choice="red" class="active">Rouge x2</button>
+                  <button data-roulette-choice="black">Noir x2</button>
+                  <button data-roulette-choice="green">Zero x14</button>
+                </div>
+                <div id="ghostAutomation" class="ghost-automation" hidden>
+                  <div class="ghost-head">
+                    <strong>Roulette fantome</strong>
+                    <span id="ghostLevel">Niv. 1</span>
+                  </div>
+                  <div class="ghost-meter"><div id="ghostCooldown"></div></div>
+                  <div class="ghost-controls">
+                    <label>
+                      <span>Mise auto</span>
+                      <input id="ghostAmount" type="number" min="100" step="25" value="100">
+                    </label>
+                    <label>
+                      <span>Cible</span>
+                      <select id="ghostChoice">
+                        <option value="red">Rouge</option>
+                        <option value="black">Noir</option>
+                      </select>
+                    </label>
+                    <label class="ghost-toggle">
+                      <input id="ghostToggle" type="checkbox">
+                      <span>Auto</span>
+                    </label>
+                  </div>
+                  <p id="ghostStatus">Pret.</p>
+                </div>
+                <button id="spinRoulette" class="primary-action">Lancer la roulette</button>
+              </div>
+            </div>
+            <div id="rouletteHistory" class="roulette-history" aria-label="Dernieres sorties de roulette"></div>
+            <p id="rouletteLog" class="game-log">La roulette est calme.</p>
+          </section>
+
+          <section id="blackjack" class="game-view game-card">
+            <div class="game-title">
+              <h3>Blackjack</h3>
+              <span>Annonce a la table</span>
+            </div>
+            <div class="stake-box">
+              <span>Mise</span>
+              <strong id="blackjackStake">40</strong>
+            </div>
+            <div class="stake-buttons" data-stake-game="blackjack">
+              <button data-stake-add="25">+25</button>
+              <button data-stake-add="50">+50</button>
+              <button data-stake-add="100">+100</button>
+              <button data-stake-add="500">+500</button>
+              <button data-stake-add="1000">+1000</button>
+              <button data-stake-all>All in</button>
+              <button data-stake-add="-25">-25</button>
+              <button data-stake-clear>Vider</button>
+            </div>
+            <div class="action-row">
+              <button id="blackjackDeal" class="primary-action">Distribuer</button>
+              <button id="blackjackHit" disabled>Carte</button>
+              <button id="blackjackStand" disabled>Rester</button>
+            </div>
+            <div class="hands">
+              <div>
+                <span>Croupier</span>
+                <div id="dealerHand" class="cards"></div>
+              </div>
+              <div>
+                <span>Toi</span>
+                <div id="playerHand" class="cards"></div>
+              </div>
+            </div>
+            <p id="blackjackLog" class="game-log">Blackjack pret.</p>
+          </section>
+
+          <section id="poker" class="game-view game-card">
+            <div class="game-title">
+              <h3>Texas Hold'em</h3>
+              <span id="pokerStatus">2 joueurs minimum</span>
+            </div>
+            <div class="stake-box">
+              <span>Mise</span>
+              <strong id="pokerStake">50</strong>
+            </div>
+            <div class="stake-buttons" data-stake-game="poker">
+              <button data-stake-add="25">+25</button>
+              <button data-stake-add="50">+50</button>
+              <button data-stake-add="100">+100</button>
+              <button data-stake-add="500">+500</button>
+              <button data-stake-add="1000">+1000</button>
+              <button data-stake-all>All in</button>
+              <button data-stake-add="-25">-25</button>
+              <button data-stake-clear>Vider</button>
+            </div>
+            <button id="drawPoker" class="primary-action">Pret pour le poker</button>
+            <div class="action-row poker-actions">
+              <button id="pokerStay" class="primary-action" disabled>Rester</button>
+              <button id="pokerFold" disabled>Se coucher</button>
+            </div>
+            <div id="pokerReadyList" class="ready-list"></div>
+            <div class="holdem-layout">
+              <div>
+                <span>Tes cartes</span>
+                <div id="pokerHand" class="cards poker-hand"></div>
+              </div>
+              <div>
+                <span>Board</span>
+                <div id="communityCards" class="cards community-cards"></div>
+              </div>
+            </div>
+            <p id="pokerLog" class="game-log">Les joueurs qui veulent participer doivent se mettre prets.</p>
+          </section>
+
+          <section id="race" class="game-view game-card">
+            <div class="game-title">
+              <h3>Course</h3>
+              <span id="raceStatus">Aucune course</span>
+            </div>
+            <div class="race-setup">
+              <label>
+                <span>Duree</span>
+                <select id="raceDuration">
+                  <option value="30">30s</option>
+                  <option value="60" selected>1 min</option>
+                  <option value="180">3 min</option>
+                  <option value="300">5 min</option>
+                </select>
+              </label>
+              <label>
+                <span>Mise</span>
+                <input id="raceBet" type="number" min="1" step="25" value="100">
+              </label>
+            </div>
+            <div class="action-row race-actions">
+              <button id="raceCreate" class="primary-action">Creer</button>
+              <button id="raceJoin">Rejoindre</button>
+              <button id="raceStart" disabled>Lancer</button>
+            </div>
+            <div class="race-score">
+              <span>Score course</span>
+              <strong id="raceScore">0</strong>
+              <div><div id="raceProgress"></div></div>
+            </div>
+            <div id="racePlayers" class="ready-list"></div>
+            <p id="raceLog" class="game-log">Cree une course ou rejoins celle de la table.</p>
+          </section>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <aside class="network-rail" aria-label="Table reseau">
+    <section class="rail-card network-card">
+      <nav class="network-tabs" aria-label="Onglets reseau">
+        <button class="active" data-network-tab="chat">Chat</button>
+        <button data-network-tab="players">Joueurs</button>
+        <button data-network-tab="journal">Journal</button>
+      </nav>
+
+      <div id="networkChatPanel" class="network-panel active">
+        <div id="chatMessages" class="chat-messages"></div>
+        <form id="chatForm" class="chat-form">
+          <input id="chatInput" maxlength="180" placeholder="Message table">
+          <button type="submit">Envoyer</button>
+        </form>
+      </div>
+
+      <div id="networkPlayersPanel" class="network-panel">
+        <div id="onlinePlayers" class="players lobby-list"></div>
+      </div>
+
+      <div id="networkJournalPanel" class="network-panel">
+        <div id="roomEvents" class="events-list"></div>
+      </div>
+    </section>
+  </aside>
+
+  <div id="players" hidden></div>
+  <div id="celebrationLayer" class="celebration-layer" aria-hidden="true"></div>
+  <script src="app.js?v=23"></script>
+</body>
+</html>
