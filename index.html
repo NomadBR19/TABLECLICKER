@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Table Clicker</title>
-  <link rel="stylesheet" href="styles.css?v=15">
+  <link rel="stylesheet" href="styles.css?v=20">
 </head>
 <body>
   <main class="app-shell">
@@ -83,13 +83,14 @@
                   <strong id="rouletteStake">25</strong>
                 </div>
                 <div class="stake-buttons" data-stake-game="roulette">
-                  <button data-stake-add="25">+25</button>
-                  <button data-stake-add="50">+50</button>
-                  <button data-stake-add="100">+100</button>
-                  <button data-stake-add="500">+500</button>
-                  <button data-stake-add="1000">+1000</button>
+                  <button data-stake-tier-down>Down</button>
+                  <button data-stake-step="0">+25</button>
+                  <button data-stake-step="1">+50</button>
+                  <button data-stake-step="2">+100</button>
+                  <button data-stake-step="3">+1000</button>
+                  <button data-stake-tier-up>Up</button>
                   <button data-stake-all>All in</button>
-                  <button data-stake-add="-25">-25</button>
+                  <button data-stake-sub>-25</button>
                   <button data-stake-clear>Vider</button>
                 </div>
                 <div class="choice-buttons">
@@ -139,13 +140,14 @@
               <strong id="blackjackStake">40</strong>
             </div>
             <div class="stake-buttons" data-stake-game="blackjack">
-              <button data-stake-add="25">+25</button>
-              <button data-stake-add="50">+50</button>
-              <button data-stake-add="100">+100</button>
-              <button data-stake-add="500">+500</button>
-              <button data-stake-add="1000">+1000</button>
+              <button data-stake-tier-down>Down</button>
+              <button data-stake-step="0">+25</button>
+              <button data-stake-step="1">+50</button>
+              <button data-stake-step="2">+100</button>
+              <button data-stake-step="3">+1000</button>
+              <button data-stake-tier-up>Up</button>
               <button data-stake-all>All in</button>
-              <button data-stake-add="-25">-25</button>
+              <button data-stake-sub>-25</button>
               <button data-stake-clear>Vider</button>
             </div>
             <div class="action-row">
@@ -176,13 +178,14 @@
               <strong id="pokerStake">50</strong>
             </div>
             <div class="stake-buttons" data-stake-game="poker">
-              <button data-stake-add="25">+25</button>
-              <button data-stake-add="50">+50</button>
-              <button data-stake-add="100">+100</button>
-              <button data-stake-add="500">+500</button>
-              <button data-stake-add="1000">+1000</button>
+              <button data-stake-tier-down>Down</button>
+              <button data-stake-step="0">+25</button>
+              <button data-stake-step="1">+50</button>
+              <button data-stake-step="2">+100</button>
+              <button data-stake-step="3">+1000</button>
+              <button data-stake-tier-up>Up</button>
               <button data-stake-all>All in</button>
-              <button data-stake-add="-25">-25</button>
+              <button data-stake-sub>-25</button>
               <button data-stake-clear>Vider</button>
             </div>
             <button id="drawPoker" class="primary-action">Pret pour le poker</button>
@@ -212,16 +215,11 @@
             <div class="race-setup">
               <label>
                 <span>Duree</span>
-                <select id="raceDuration">
-                  <option value="30">30s</option>
-                  <option value="60" selected>1 min</option>
-                  <option value="180">3 min</option>
-                  <option value="300">5 min</option>
-                </select>
+                <input id="raceDuration" type="number" min="1" max="60" step="1" value="1">
               </label>
               <label>
                 <span>Mise</span>
-                <input id="raceBet" type="number" min="1" step="25" value="100">
+                <strong id="raceBetPreview">All-in au depart</strong>
               </label>
             </div>
             <div class="action-row race-actions">
@@ -235,6 +233,18 @@
               <div><div id="raceProgress"></div></div>
             </div>
             <div id="racePlayers" class="ready-list"></div>
+            <div id="raceWagerPanel" class="race-wager-panel" hidden>
+              <div class="race-wager-head">
+                <strong>Paris spectateurs</strong>
+                <span id="raceWagerStatus">Fermes</span>
+              </div>
+              <div class="race-wager-form">
+                <select id="raceWagerTarget"></select>
+                <input id="raceWagerAmount" type="number" min="1" step="25" value="100">
+                <button id="raceWagerPlace">Parier</button>
+              </div>
+              <div id="raceWagerList" class="ready-list"></div>
+            </div>
             <p id="raceLog" class="game-log">Cree une course ou rejoins celle de la table.</p>
           </section>
         </div>
@@ -245,7 +255,7 @@
   <aside class="network-rail" aria-label="Table reseau">
     <section class="rail-card network-card">
       <nav class="network-tabs" aria-label="Onglets reseau">
-        <button class="active" data-network-tab="chat">Chat</button>
+        <button class="active" data-network-tab="chat">Chat<span id="chatUnreadBadge" class="chat-unread-badge" hidden>0</span></button>
         <button data-network-tab="players">Joueurs</button>
         <button data-network-tab="journal">Journal</button>
       </nav>
@@ -270,6 +280,6 @@
 
   <div id="players" hidden></div>
   <div id="celebrationLayer" class="celebration-layer" aria-hidden="true"></div>
-  <script src="app.js?v=23"></script>
+  <script src="app.js?v=34"></script>
 </body>
 </html>
