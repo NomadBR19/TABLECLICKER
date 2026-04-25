@@ -19,6 +19,9 @@ const DEFAULT_AUTOMATION = {
   roulette: { enabled: false, amount: 100, choice: "red", lastAt: 0 }
 };
 const MIN_GHOST_ROULETTE_BET = 100;
+const ROULETTE_SPIN_MS = 4900;
+const STAKE_BASE_STEPS = [25, 50, 100, 1000];
+const MAX_STAKE_TIER = 12;
 
 const state = load() || {
   chips: 0,
@@ -37,6 +40,7 @@ let playerId = getPlayerId();
 let lastTick = performance.now();
 let bj = null;
 let stakes = { roulette: 25, blackjack: 40, poker: 50 };
+let stakeTier = Math.max(0, Math.min(MAX_STAKE_TIER, Math.floor(Number(localStorage.getItem("table-clicker-stake-tier")) || 0)));
 let rouletteChoice = "red";
 let rouletteSpin = 0;
 let rouletteBusy = false;
@@ -54,6 +58,7 @@ let raceScore = 0;
 let lastRaceScoreSent = 0;
 let paidRaceIds = new Set(JSON.parse(localStorage.getItem("table-clicker-paid-races") || "[]"));
 let wonRaceIds = new Set(JSON.parse(localStorage.getItem("table-clicker-won-races") || "[]"));
+let raceSnapshots = JSON.parse(localStorage.getItem("table-clicker-race-snapshots") || "{}");
 let lastRoomPlayersKey = "";
 let lastLobbyKey = "";
 let lastPokerReadyKey = "";
@@ -62,9 +67,20 @@ let lastRaceKey = "";
 let lastChatKey = "";
 let lastEventsKey = "";
 let seenBigWinEvents = new Set();
+let seenChatMessages = new Set();
+let chatInitialized = false;
+let unreadChatCount = 0;
+let activeNetworkTab = "chat";
 let lastAutomationWarning = "";
+let activeCelebrationFrame = 0;
+let activeCelebrationCanvas = null;
+const emojiSpriteCache = new Map();
 
 const $ = id => document.getElementById(id);
+
+function emptyUpgrades() {
+  return Object.fromEntries(upgrades.map(u => [u.id, 0]));
+}
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({
@@ -116,7 +132,7 @@ function gain(amount) {
 
 function addRaceScore(amount) {
   if (!currentRace || currentRace.status !== "running") return;
-  const me = (currentRace.players || []).find(p => p.self);
+  const me = myRaceRunner(currentRace);
   if (!me) return;
   raceScore += Math.max(0, amount);
 }
@@ -168,6 +184,7 @@ function render(forceUpgrades = false) {
   $("rouletteStake").textContent = fmt.format(stakes.roulette);
   $("blackjackStake").textContent = fmt.format(stakes.blackjack);
   $("pokerStake").textContent = fmt.format(stakes.poker);
+  renderStakeTierControls();
   $("raceScore").textContent = fmt.format(raceScore);
   updatePokerAvailability();
   updateRaceControls();
@@ -210,7 +227,8 @@ function settleBet(bet, payout, label, origin = null) {
     gain(payout);
     state.stats.won += payout;
     spawnFloatText(origin, `+${fmt.format(payout)}`, "win");
-    celebrate(origin, payout >= bet * 4 ? "mega" : "win");
+    if (payout >= 1000000) grandCelebrate(origin, "jackpot");
+    else celebrate(origin, payout >= bet * 4 ? "mega" : "win");
   }
   state.stats.gambled += bet;
   $("ticker").textContent = label;
@@ -267,7 +285,7 @@ function playRoulette(options = {}) {
     settleBet(bet, payout, automated ? "Le croupier fantome revient de la roulette." : "La roulette vient de tourner.", $("roulette"));
     rouletteBusy = false;
     $("spinRoulette").disabled = false;
-  }, 3650);
+  }, ROULETTE_SPIN_MS);
 }
 
 function renderAutomation() {
@@ -362,6 +380,41 @@ function setStake(game, amount) {
   render();
 }
 
+function currentStakeSteps() {
+  const multiplier = Math.pow(10, stakeTier);
+  return STAKE_BASE_STEPS.map(value => value * multiplier);
+}
+
+function setStakeTier(delta) {
+  stakeTier = Math.max(0, Math.min(MAX_STAKE_TIER, stakeTier + delta));
+  localStorage.setItem("table-clicker-stake-tier", String(stakeTier));
+  $("ticker").textContent = stakeTier === 0
+    ? "Mises en mode standard."
+    : `Mises x${fmt.format(Math.pow(10, stakeTier))}.`;
+  render();
+}
+
+function renderStakeTierControls() {
+  const steps = currentStakeSteps();
+  document.querySelectorAll("[data-stake-step]").forEach(btn => {
+    const index = Math.max(0, Math.min(steps.length - 1, Number(btn.dataset.stakeStep) || 0));
+    const value = steps[index];
+    btn.dataset.stakeAdd = value;
+    btn.textContent = `+${fmt.format(value)}`;
+  });
+  document.querySelectorAll("[data-stake-sub]").forEach(btn => {
+    const value = steps[0];
+    btn.dataset.stakeAdd = -value;
+    btn.textContent = `-${fmt.format(value)}`;
+  });
+  document.querySelectorAll("[data-stake-tier-down]").forEach(btn => {
+    btn.disabled = stakeTier <= 0;
+  });
+  document.querySelectorAll("[data-stake-tier-up]").forEach(btn => {
+    btn.disabled = stakeTier >= MAX_STAKE_TIER;
+  });
+}
+
 function setRouletteChoice(choice) {
   rouletteChoice = choice;
   document.querySelectorAll("[data-roulette-choice]").forEach(btn => {
@@ -392,9 +445,11 @@ function celebrate(origin, intensity = "win") {
   const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
   const y = rect ? rect.top + rect.height / 2 : window.innerHeight * .42;
   const faces = [":)", ":D", "$", "*", "+", "!", "WIN"];
-  const count = intensity === "mega" ? 90 : 58;
-  const rainCount = intensity === "mega" ? 110 : 70;
-  const spread = intensity === "mega" ? 1.35 : 1;
+  const count = intensity === "mega" ? 18 : 8;
+  const rainCount = 0;
+  const spread = intensity === "mega" ? 1.25 : .7;
+  const fragment = document.createDocumentFragment();
+  const created = [];
   shakeElements(origin, intensity);
   for (let i = 0; i < count; i++) {
     const el = document.createElement("span");
@@ -406,8 +461,8 @@ function celebrate(origin, intensity = "win") {
     el.style.setProperty("--dy", `${(Math.sin((Math.PI * 2 * i) / count) * (70 + Math.random() * 190) - 105) * spread}px`);
     el.style.setProperty("--rot", `${Math.floor(Math.random() * 720 - 360)}deg`);
     el.style.setProperty("--size", `${Math.floor(18 + Math.random() * (intensity === "mega" ? 28 : 21))}px`);
-    layer.appendChild(el);
-    window.setTimeout(() => el.remove(), 1650);
+    fragment.appendChild(el);
+    created.push(el);
   }
   for (let i = 0; i < rainCount; i++) {
     const el = document.createElement("span");
@@ -419,9 +474,131 @@ function celebrate(origin, intensity = "win") {
     el.style.setProperty("--size", `${Math.floor(16 + Math.random() * (intensity === "mega" ? 26 : 18))}px`);
     el.style.setProperty("--duration", `${(1.25 + Math.random() * .85).toFixed(2)}s`);
     el.style.animationDelay = `${(Math.random() * .32).toFixed(2)}s`;
-    layer.appendChild(el);
-    window.setTimeout(() => el.remove(), 2600);
+    fragment.appendChild(el);
+    created.push(el);
   }
+  layer.appendChild(fragment);
+  window.setTimeout(() => created.forEach(el => el.remove()), intensity === "mega" ? 2600 : 1700);
+}
+
+function emojiSprite(emoji, size) {
+  const roundedSize = Math.max(18, Math.min(42, Math.round(size)));
+  const key = `${emoji}:${roundedSize}`;
+  if (emojiSpriteCache.has(key)) return emojiSpriteCache.get(key);
+  const canvas = document.createElement("canvas");
+  const pad = 6;
+  canvas.width = roundedSize + pad * 2;
+  canvas.height = roundedSize + pad * 2;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.font = `${roundedSize}px "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(emoji, canvas.width / 2, canvas.height / 2);
+  emojiSpriteCache.set(key, canvas);
+  return canvas;
+}
+
+function grandCelebrate(origin, theme = "jackpot") {
+  const layer = $("celebrationLayer");
+  if (!layer) return;
+  if (activeCelebrationFrame) cancelAnimationFrame(activeCelebrationFrame);
+  if (activeCelebrationCanvas) activeCelebrationCanvas.remove();
+  const rect = origin ? origin.getBoundingClientRect() : null;
+  const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+  const y = rect ? rect.top + rect.height / 2 : window.innerHeight * .42;
+  const dpr = 1;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  canvas.className = "celebration-canvas";
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = `${window.innerWidth}px`;
+  canvas.style.height = `${window.innerHeight}px`;
+  ctx.scale(dpr, dpr);
+  layer.appendChild(canvas);
+  activeCelebrationCanvas = canvas;
+
+  const emojis = theme === "race"
+    ? ["\u{1F3C1}", "\u{1F3C6}", "\u{1F4A5}", "\u{1F389}", "\u{2B50}", "\u{1F4B0}"]
+    : ["\u{1F389}", "\u{1F4B0}", "\u{2728}", "\u{1F3C6}", "\u{1F48E}", "\u{1F525}"];
+  const colors = ["#ffd35a", "#ef4c57", "#45d686", "#54b8ff", "#fff3b9", "#f08cff"];
+  const particles = [];
+  shakeElements(origin, "mega");
+
+  for (let i = 0; i < 150; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 4 + Math.random() * 12;
+    particles.push({
+      type: "confetti",
+      x,
+      y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 7 - Math.random() * 8,
+      gravity: .18 + Math.random() * .16,
+      size: 5 + Math.random() * 9,
+      rot: Math.random() * Math.PI,
+      spin: (Math.random() - .5) * .28,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      life: 1700 + Math.random() * 1200
+    });
+  }
+  for (let i = 0; i < 34; i++) {
+    const size = 18 + Math.random() * 20;
+    const text = emojis[Math.floor(Math.random() * emojis.length)];
+    particles.push({
+      type: "emoji",
+      sprite: emojiSprite(text, size),
+      x: Math.random() * window.innerWidth,
+      y: -30 - Math.random() * 260,
+      vx: (Math.random() - .5) * 2.8,
+      vy: 2.8 + Math.random() * 4.4,
+      gravity: .045 + Math.random() * .045,
+      size,
+      rot: (Math.random() - .5) * .5,
+      spin: (Math.random() - .5) * .035,
+      life: 2100 + Math.random() * 900
+    });
+  }
+
+  const startedAt = performance.now();
+  let lastFrameAt = 0;
+  function animate(now) {
+    if (now - lastFrameAt < 32) {
+      activeCelebrationFrame = requestAnimationFrame(animate);
+      return;
+    }
+    lastFrameAt = now;
+    const elapsed = now - startedAt;
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    particles.forEach(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += p.gravity;
+      p.rot += p.spin;
+      const alpha = Math.max(0, Math.min(1, 1 - elapsed / p.life));
+      if (alpha <= 0) return;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      if (p.type === "emoji") {
+        if (p.sprite) ctx.drawImage(p.sprite, -p.size / 2, -p.size / 2, p.size, p.size);
+      } else {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 1.8);
+      }
+      ctx.restore();
+    });
+    if (elapsed < 2600) activeCelebrationFrame = requestAnimationFrame(animate);
+    else {
+      canvas.remove();
+      if (activeCelebrationCanvas === canvas) activeCelebrationCanvas = null;
+      activeCelebrationFrame = 0;
+    }
+  }
+  activeCelebrationFrame = requestAnimationFrame(animate);
 }
 
 function spawnFloatText(origin, text, tone = "gain") {
@@ -454,6 +631,13 @@ function showTableAnnouncement(text, key = "") {
   el.style.top = `${y}vh`;
   layer.appendChild(el);
   window.setTimeout(() => el.remove(), 5200);
+}
+
+function showChatAnnouncement(message, key = "") {
+  if (!message || message.playerId === playerId) return;
+  const name = message.name || "Joueur";
+  const text = String(message.text || "").slice(0, 80);
+  showTableAnnouncement(`${name}: ${text}`, key);
 }
 
 function shakeElements(origin, intensity = "win") {
@@ -598,6 +782,8 @@ function renderPokerHand(hand) {
   if (!hand || hand.type !== "poker_hand") {
     pokerHandActive = false;
     pokerMyTurn = false;
+    lastPokerHandKey = "";
+    $("poker").classList.remove("game-running");
     updatePokerAvailability();
     return;
   }
@@ -654,6 +840,9 @@ function applyPokerGame(game) {
   localStorage.setItem("table-clicker-last-poker", String(game.at));
   pokerHandActive = false;
   pokerMyTurn = false;
+  pokerReady = false;
+  pokerReadyCount = 0;
+  pokerReadyDeadline = 0;
   lastPokerHandKey = "";
   renderCards($("communityCards"), game.community || []);
   const me = (game.players || []).find(p => p.id === playerId);
@@ -661,15 +850,15 @@ function applyPokerGame(game) {
   const winnerText = game.winnerId === playerId ? "Tu gagnes" : `${game.winnerName} gagne`;
   const detail = game.winnerDetail || `Main: ${game.winnerLabel}.`;
   log("pokerLog", `${winnerText}. ${detail} Pot ${fmt.format(game.payout)}.`);
-  pokerReady = false;
-  pokerReadyDeadline = 0;
   if (game.winnerId === playerId) {
     gain(game.payout);
     state.stats.won += game.payout;
-    celebrate($("poker"), "mega");
+    if (game.payout >= 1000000) grandCelebrate($("poker"), "jackpot");
+    else celebrate($("poker"), "mega");
     save();
-    render();
   }
+  updatePokerAvailability();
+  render();
 }
 
 function rememberSet(storageKey, set, value) {
@@ -680,10 +869,39 @@ function rememberSet(storageKey, set, value) {
   return next;
 }
 
+function rememberRaceSnapshot(raceId) {
+  if (!raceId || raceSnapshots[raceId]) return;
+  raceSnapshots[raceId] = {
+    prestige: state.prestige,
+    heat: state.heat,
+    upgrades: { ...state.upgrades },
+    automation: JSON.parse(JSON.stringify(state.automation || {}))
+  };
+  localStorage.setItem("table-clicker-race-snapshots", JSON.stringify(raceSnapshots));
+}
+
+function restoreRaceSnapshot(raceId) {
+  const snapshot = raceSnapshots[raceId];
+  if (!snapshot) return false;
+  state.prestige = Number(snapshot.prestige) || 1;
+  state.heat = Number(snapshot.heat) || 0;
+  state.upgrades = { ...snapshot.upgrades };
+  state.automation = JSON.parse(JSON.stringify(snapshot.automation || {}));
+  normalizeState();
+  delete raceSnapshots[raceId];
+  localStorage.setItem("table-clicker-race-snapshots", JSON.stringify(raceSnapshots));
+  return true;
+}
+
+function myRaceRunner(race) {
+  if (!race) return null;
+  return (race.players || []).find(p => p.id === playerId && p.self === true && p.participant === true) || null;
+}
+
 function updateRaceControls() {
   const race = currentRace;
   const hasRace = Boolean(race);
-  const me = race ? (race.players || []).find(p => p.self) : null;
+  const me = myRaceRunner(race);
   const isHost = race && race.hostId === playerId;
   const lobby = race && race.status === "lobby";
   const running = race && race.status === "running";
@@ -693,10 +911,45 @@ function updateRaceControls() {
   $("raceJoin").textContent = me && lobby ? "Annuler" : "Rejoindre";
   $("raceStart").disabled = !lobby || !isHost || (race.players || []).length < 2;
   $("raceDuration").disabled = hasRace;
-  $("raceBet").disabled = running;
+  $("raceBetPreview").textContent = running && me
+    ? `${fmt.format(me.bet || 0)} engages`
+    : "All-in au depart";
   $("raceProgress").style.width = running
     ? `${Math.max(0, Math.min(100, (race.remaining / race.duration) * 100))}%`
     : "0%";
+
+  const wagerPanel = $("raceWagerPanel");
+  if (wagerPanel) {
+    const canWager = running && !me && race.bettingOpen && !race.myWager;
+    wagerPanel.hidden = !running;
+    $("raceWagerPlace").disabled = !canWager;
+    $("raceWagerTarget").disabled = !canWager;
+    $("raceWagerAmount").disabled = !canWager;
+  }
+}
+
+function formatRaceDuration(seconds) {
+  const minutes = Math.max(1, Math.round(Number(seconds || 60) / 60));
+  return `${minutes} min`;
+}
+
+function applyRaceStartReset(race, me) {
+  if (!race || !me || me.id !== playerId || me.self !== true || me.participant !== true || paidRaceIds.has(race.id)) return;
+  const bet = Math.max(0, Math.floor(Number(me.bet || 0)));
+  rememberRaceSnapshot(race.id);
+  state.stats.gambled += bet;
+  state.chips = 0;
+  state.prestige = 1;
+  state.heat = 0;
+  state.upgrades = emptyUpgrades();
+  state.automation.roulette.enabled = false;
+  state.automation.roulette.lastAt = 0;
+  paidRaceIds = rememberSet("table-clicker-paid-races", paidRaceIds, race.id);
+  raceScore = 0;
+  lastRaceScoreSent = 0;
+  $("ticker").textContent = `Course lancee: all-in de ${fmt.format(bet)} jetons, depart a zero.`;
+  save();
+  render(true);
 }
 
 function renderRace(race) {
@@ -707,24 +960,15 @@ function renderRace(race) {
     $("raceStatus").textContent = "Aucune course";
     $("raceLog").textContent = "Cree une course ou rejoins celle de la table.";
     setHtmlIfChanged("racePlayers", `<div class="empty-row">Aucune course en attente.</div>`);
+    renderRaceWagers(null);
     updateRaceControls();
     return;
   }
 
-  const me = (race.players || []).find(p => p.self);
+  const me = myRaceRunner(race);
   if (race.status === "running" && me) {
-    if (!paidRaceIds.has(race.id)) {
-      if (spend(me.bet)) {
-        state.stats.gambled += me.bet;
-        paidRaceIds = rememberSet("table-clicker-paid-races", paidRaceIds, race.id);
-        raceScore = 0;
-        save();
-      } else {
-        $("raceLog").textContent = "Mise course impossible au depart.";
-      }
-    } else {
-      raceScore = Math.max(raceScore, Number(me.score || 0));
-    }
+    applyRaceStartReset(race, me);
+    raceScore = Math.max(raceScore, Number(me.score || 0));
   }
 
   const key = [
@@ -735,9 +979,14 @@ function renderRace(race) {
   ].join("|");
   if (key !== lastRaceKey) {
     lastRaceKey = key;
-    setHtmlIfChanged("racePlayers", (race.players || []).map(p => `
-    <div class="ready-player${p.self ? " self" : ""}">
-      <span>${escapeHtml(p.name)}${p.self ? " (toi)" : ""}${p.host ? " - hote" : ""}</span>
+    const maxScore = Math.max(1, ...(race.players || []).map(p => Math.floor(Number(p.score || 0))));
+    const sortedRacePlayers = (race.players || []).slice().sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+    setHtmlIfChanged("racePlayers", sortedRacePlayers.map(p => `
+    <div class="ready-player race-player${p.self ? " self" : ""}">
+      <div>
+        <span>${escapeHtml(p.name)}${p.self ? " (toi)" : ""}${p.host ? " - hote" : ""}</span>
+        <div class="race-player-track"><i style="width:${Math.max(3, Math.min(100, Number(p.score || 0) / maxScore * 100))}%"></i></div>
+      </div>
       <strong>${fmt.format(Math.floor(p.score || 0))}</strong>
     </div>
     `).join("") || `<div class="empty-row">Aucun participant.</div>`);
@@ -749,36 +998,112 @@ function renderRace(race) {
     $("raceLog").textContent = `Pot ${fmt.format(pot)}. Le meilleur score gagne.`;
   } else {
     $("raceStatus").textContent = `${race.hostName} invite la table`;
-    $("raceLog").textContent = `Course de ${race.duration}s. Pot actuel ${fmt.format(pot)}.`;
+    $("raceLog").textContent = `Course de ${formatRaceDuration(race.duration)}. Chaque joueur misera tous ses jetons au depart.`;
   }
+  renderRaceWagers(race);
   updateRaceControls();
+}
+
+function renderRaceWagers(race) {
+  const panel = $("raceWagerPanel");
+  if (!panel) return;
+  if (!race || race.status !== "running") {
+    panel.hidden = true;
+    setHtmlIfChanged("raceWagerList", "");
+    return;
+  }
+
+  const me = myRaceRunner(race);
+  const canWager = !me && race.bettingOpen && !race.myWager;
+  panel.hidden = false;
+  $("raceWagerStatus").textContent = race.bettingOpen
+    ? `Ouverts ${Math.ceil(race.bettingRemaining || 0)}s - pot ${fmt.format(race.wagerPot || 0)}`
+    : `Fermes - pot ${fmt.format(race.wagerPot || 0)}`;
+  $("raceWagerPlace").disabled = !canWager;
+  $("raceWagerTarget").disabled = !canWager;
+  $("raceWagerAmount").disabled = !canWager;
+
+  const target = $("raceWagerTarget");
+  const previous = target.value;
+  const options = (race.players || []).map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+  if (target.innerHTML !== options) {
+    target.innerHTML = options;
+    if ([...target.options].some(option => option.value === previous)) target.value = previous;
+  }
+
+  const rows = [];
+  if (race.myWager) {
+    rows.push(`<div class="ready-player self"><span>Ton pari sur ${escapeHtml(race.myWager.targetName)}</span><strong>${fmt.format(race.myWager.amount)}</strong></div>`);
+  } else if (me) {
+    rows.push(`<div class="empty-row">Tu cours deja: seuls les spectateurs peuvent parier.</div>`);
+  } else if (!race.bettingOpen) {
+    rows.push(`<div class="empty-row">Paris fermes apres le premier quart de course.</div>`);
+  }
+  rows.push(...(race.wagersByTarget || []).map(item => `
+    <div class="ready-player">
+      <span>${escapeHtml(item.targetName)}</span>
+      <strong>${fmt.format(item.amount || 0)}</strong>
+    </div>
+  `));
+  setHtmlIfChanged("raceWagerList", rows.join("") || `<div class="empty-row">Aucun pari pour le moment.</div>`);
 }
 
 function applyRaceResult(result) {
   if (!result || result.type !== "race" || wonRaceIds.has(result.id)) return;
-  currentRace = null;
+  if (currentRace && currentRace.id && currentRace.id !== result.id) return;
   const me = (result.players || []).find(p => p.id === playerId);
-  if (!me) return;
+  const myWager = (result.wagerPayouts || []).find(p => p.id === playerId);
+  if (!me && !myWager) return;
+  currentRace = null;
   wonRaceIds = rememberSet("table-clicker-won-races", wonRaceIds, result.id);
+  if (me) {
+    restoreRaceSnapshot(result.id);
+    state.chips = 0;
+  }
   if (result.winnerId === playerId) {
     gain(result.payout);
     state.stats.won += result.payout;
     $("raceLog").textContent = `Tu gagnes la course. Pot ${fmt.format(result.payout)}.`;
     showTableAnnouncement(`${state.name} gagne la course: ${fmt.format(result.payout)} jetons`, `race-win-${result.id}`);
-    celebrate($("race"), result.payout >= 100000 ? "mega" : "win");
+    grandCelebrate($("race"), "race");
+  } else if (myWager && myWager.payout > 0) {
+    gain(myWager.payout);
+    state.stats.won += myWager.payout;
+    $("raceLog").textContent = `Pari gagne sur ${result.winnerName}. Gain ${fmt.format(myWager.payout)}.`;
+    celebrate($("race"), myWager.payout >= 1000000 ? "mega" : "win");
+  } else if (myWager) {
+    $("raceLog").textContent = `Pari perdu. ${result.winnerName} gagne la course.`;
   } else {
     $("raceLog").textContent = `${result.winnerName} gagne la course avec ${fmt.format(Math.floor((result.players || [])[0]?.score || 0))} points.`;
   }
   raceScore = 0;
   save();
-  render();
+  render(Boolean(me));
+}
+
+async function placeRaceWager() {
+  const race = currentRace;
+  if (!race || race.status !== "running") return;
+  const amount = Math.max(1, Math.floor(Number($("raceWagerAmount").value) || 0));
+  const targetId = $("raceWagerTarget").value;
+  if (!targetId) return log("raceLog", "Choisis un coureur.");
+  if (amount > state.chips) return log("raceLog", "Mise pari impossible.");
+  const res = await sendTableAction({ type: "race_wager", targetId, amount }, true);
+  if (!res.ok) return log("raceLog", res.error || "Pari impossible.");
+  if (spend(amount)) {
+    state.stats.gambled += amount;
+    $("ticker").textContent = "Pari course enregistre.";
+    save();
+  }
+  renderRace(res.race);
+  pollTable();
 }
 
 async function createRace() {
-  const duration = Number($("raceDuration").value || 60);
-  const amount = Math.max(1, Math.floor(Number($("raceBet").value) || 100));
-  if (amount > state.chips) return log("raceLog", "Mise course impossible.");
-  const res = await sendTableAction({ type: "race_create", duration, amount }, true);
+  const minutes = Math.max(1, Math.floor(Number($("raceDuration").value) || 1));
+  const duration = minutes * 60;
+  if (state.chips <= 0) return log("raceLog", "Il faut au moins 1 jeton pour ouvrir une course.");
+  const res = await sendTableAction({ type: "race_create", duration, amount: state.chips }, true);
   if (!res.ok) return log("raceLog", res.error || "Course impossible.");
   renderRace(res.race);
   pollTable();
@@ -787,9 +1112,9 @@ async function createRace() {
 async function joinRace() {
   const race = currentRace;
   if (!race || race.status !== "lobby") return;
-  const me = (race.players || []).find(p => p.self);
-  const amount = me ? 0 : Math.max(1, Math.floor(Number($("raceBet").value) || 100));
-  if (amount > state.chips) return log("raceLog", "Mise course impossible.");
+  const me = myRaceRunner(race);
+  const amount = me ? 0 : state.chips;
+  if (!me && amount <= 0) return log("raceLog", "Il faut au moins 1 jeton pour rejoindre une course.");
   const res = await sendTableAction({ type: "race_join", amount }, true);
   if (!res.ok) return log("raceLog", res.error || "Participation impossible.");
   renderRace(res.race);
@@ -806,7 +1131,7 @@ async function startRace() {
 
 function syncRaceScore(force = false) {
   if (!currentRace || currentRace.status !== "running") return;
-  const me = (currentRace.players || []).find(p => p.self);
+  const me = myRaceRunner(currentRace);
   if (!me) return;
   const now = Date.now();
   if (!force && now - lastRaceScoreSent < 1000) return;
@@ -894,12 +1219,24 @@ function renderLobby(players) {
 }
 
 function setNetworkTab(tab) {
+  activeNetworkTab = tab;
   document.querySelectorAll("[data-network-tab]").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.networkTab === tab);
   });
   $("networkChatPanel").classList.toggle("active", tab === "chat");
   $("networkPlayersPanel").classList.toggle("active", tab === "players");
   $("networkJournalPanel").classList.toggle("active", tab === "journal");
+  if (tab === "chat") {
+    unreadChatCount = 0;
+    updateChatUnreadBadge();
+  }
+}
+
+function updateChatUnreadBadge() {
+  const badge = $("chatUnreadBadge");
+  if (!badge) return;
+  badge.hidden = unreadChatCount <= 0;
+  badge.textContent = unreadChatCount > 99 ? "99+" : String(unreadChatCount);
 }
 
 function renderPokerReady(players, deadline = 0) {
@@ -922,6 +1259,28 @@ function renderPokerReady(players, deadline = 0) {
 function renderChat(messages) {
   const key = messages.map(msg => `${msg.at}:${msg.playerId}:${msg.name}:${msg.text}`).join("|");
   if (key === lastChatKey) return;
+  const newUnreadMessages = [];
+  messages.forEach(msg => {
+    const messageKey = `${msg.at}:${msg.playerId}:${msg.text}`;
+    if (!seenChatMessages.has(messageKey)) {
+      if (chatInitialized && activeNetworkTab !== "chat" && msg.playerId !== playerId) {
+        newUnreadMessages.push({ ...msg, key: messageKey });
+      }
+      seenChatMessages.add(messageKey);
+    }
+  });
+  if (seenChatMessages.size > 90) {
+    seenChatMessages = new Set(Array.from(seenChatMessages).slice(-60));
+  }
+  if (newUnreadMessages.length) {
+    unreadChatCount += newUnreadMessages.length;
+    newUnreadMessages.forEach(msg => showChatAnnouncement(msg, `chat-${msg.key}`));
+    updateChatUnreadBadge();
+  } else if (activeNetworkTab === "chat" && unreadChatCount) {
+    unreadChatCount = 0;
+    updateChatUnreadBadge();
+  }
+  chatInitialized = true;
   lastChatKey = key;
   const box = $("chatMessages");
   const wasNearBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 12;
@@ -980,9 +1339,11 @@ function bind() {
     }
   });
   $("spinRoulette").addEventListener("click", playRoulette);
-  document.querySelectorAll("[data-stake-add]").forEach(btn => btn.addEventListener("click", () => {
+  document.querySelectorAll("[data-stake-step], [data-stake-sub]").forEach(btn => btn.addEventListener("click", () => {
     updateStake(btn.closest("[data-stake-game]").dataset.stakeGame, Number(btn.dataset.stakeAdd));
   }));
+  document.querySelectorAll("[data-stake-tier-down]").forEach(btn => btn.addEventListener("click", () => setStakeTier(-1)));
+  document.querySelectorAll("[data-stake-tier-up]").forEach(btn => btn.addEventListener("click", () => setStakeTier(1)));
   document.querySelectorAll("[data-stake-all]").forEach(btn => btn.addEventListener("click", () => {
     setStake(btn.closest("[data-stake-game]").dataset.stakeGame, state.chips);
   }));
@@ -1020,6 +1381,7 @@ function bind() {
   $("raceCreate").addEventListener("click", createRace);
   $("raceJoin").addEventListener("click", joinRace);
   $("raceStart").addEventListener("click", startRace);
+  $("raceWagerPlace").addEventListener("click", placeRaceWager);
   document.querySelectorAll("[data-network-tab]").forEach(btn => {
     btn.addEventListener("click", () => setNetworkTab(btn.dataset.networkTab));
   });
