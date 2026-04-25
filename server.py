@@ -329,6 +329,8 @@ def finish_poker_hand(room, reason="showdown"):
     }
     room["last_game"] = game
     room["poker_hand"] = None
+    room["poker_ready"] = {}
+    room["poker_ready_deadline"] = 0
     add_event(room, f"{winner['name']} remporte le poker: {winner_detail} ({payout} jetons).", "poker")
     add_big_win(room, winner["name"], "poker", payout)
     return game, ""
@@ -419,7 +421,8 @@ def create_race(room, player_id, name, duration, amount=0, chips=0):
     clean()
     if room.get("race"):
         return None, "Une course est deja ouverte."
-    duration = max(30, min(300, int(duration or 60)))
+    duration = max(60, min(3600, int(duration or 60)))
+    duration = max(60, min(3600, round(duration / 60) * 60))
     amount = max(0, int(amount or 0))
     if amount > chips:
         return None, "Mise course impossible."
@@ -433,9 +436,10 @@ def create_race(room, player_id, name, duration, amount=0, chips=0):
         "startedAt": 0,
         "ends_at": 0,
         "players": {},
+        "wagers": {},
     }
     room["race"] = race
-    add_announcement(room, f"{name} ouvre une course de {duration}s.")
+    add_announcement(room, f"{name} ouvre une course de {max(1, duration // 60)} min.")
     if amount > 0:
         race["players"][player_id] = {
             "id": player_id,
@@ -444,7 +448,7 @@ def create_race(room, player_id, name, duration, amount=0, chips=0):
             "score": 0,
             "seen": time.time(),
         }
-        add_event(room, f"{name} rejoint la course ({amount} jetons).", "race")
+        add_event(room, f"{name} rejoint la course (all-in au depart).", "race")
     return race, ""
 
 
@@ -467,7 +471,7 @@ def join_race(room, player_id, name, amount, chips):
         "score": 0,
         "seen": time.time(),
     }
-    add_event(room, f"{name} rejoint la course ({amount} jetons).", "race")
+    add_event(room, f"{name} rejoint la course (all-in au depart).", "race")
     return race, ""
 
 
@@ -482,13 +486,18 @@ def start_race(room, player_id):
     if len(race.get("players", {})) < 2:
         return None, "Il faut au moins 2 joueurs pour lancer la course."
     now = time.time()
+    for pid, race_player in race.get("players", {}).items():
+        current_chips = max(0, int(room.get("players", {}).get(pid, {}).get("chips", race_player.get("bet", 0)) or 0))
+        if current_chips <= 0:
+            return None, f"{race_player.get('name', 'Un joueur')} n'a pas de jetons a miser."
+        race_player["bet"] = current_chips
     race["status"] = "running"
     race["startedAt"] = now
     race["ends_at"] = now + race.get("duration", 60)
     for player in race.get("players", {}).values():
         player["score"] = 0
         player["seen"] = now
-    add_event(room, f"La course demarre pour {race.get('duration', 60)}s.", "race")
+    add_event(room, f"La course demarre pour {max(1, int(race.get('duration', 60)) // 60)} min. Tout le monde est all-in.", "race")
     return race, ""
 
 
@@ -506,6 +515,41 @@ def update_race_score(room, player_id, score):
     return room.get("race"), ""
 
 
+def race_betting_deadline(race):
+    return race.get("startedAt", 0) + max(15, race.get("duration", 60) / 4)
+
+
+def place_race_wager(room, player_id, name, target_id, amount, chips):
+    race = room.get("race")
+    if not race:
+        return None, "Aucune course ouverte."
+    if race.get("status") != "running":
+        return None, "Les paris ouvrent au depart de la course."
+    if player_id in race.get("players", {}):
+        return None, "Les coureurs ne peuvent pas parier."
+    if player_id in race.get("wagers", {}):
+        return None, "Tu as deja parie sur cette course."
+    now = time.time()
+    if now > race_betting_deadline(race):
+        return None, "Les paris sont fermes."
+    amount = max(0, int(amount or 0))
+    if amount <= 0 or amount > chips:
+        return None, "Mise pari impossible."
+    target = race.get("players", {}).get(target_id)
+    if not target:
+        return None, "Coureur introuvable."
+    race.setdefault("wagers", {})[player_id] = {
+        "id": player_id,
+        "name": name,
+        "targetId": target_id,
+        "targetName": target.get("name", "Joueur"),
+        "amount": amount,
+        "seen": now,
+    }
+    add_event(room, f"{name} parie {amount} jetons sur {target.get('name', 'Joueur')}.", "race")
+    return race, ""
+
+
 def finish_race(room):
     race = room.get("race")
     if not race or race.get("status") != "running":
@@ -518,6 +562,22 @@ def finish_race(room):
     players.sort(key=lambda p: (p.get("score", 0), p.get("bet", 0)), reverse=True)
     winner = players[0]
     payout = sum(max(0, int(p.get("bet", 0))) for p in players)
+    wagers = list(race.get("wagers", {}).values())
+    wager_pot = sum(max(0, int(w.get("amount", 0))) for w in wagers)
+    winning_wagers = [w for w in wagers if w.get("targetId") == winner["id"]]
+    winning_wager_total = sum(max(0, int(w.get("amount", 0))) for w in winning_wagers)
+    wager_payouts = []
+    for wager in wagers:
+        amount = max(0, int(wager.get("amount", 0)))
+        won = wager.get("targetId") == winner["id"] and winning_wager_total > 0
+        wager_payouts.append({
+            "id": wager["id"],
+            "name": wager.get("name", "Joueur"),
+            "targetId": wager.get("targetId"),
+            "targetName": wager.get("targetName", "Joueur"),
+            "amount": amount,
+            "payout": int(wager_pot * amount / winning_wager_total) if won else 0,
+        })
     result = {
         "type": "race",
         "id": race["id"],
@@ -525,6 +585,8 @@ def finish_race(room):
         "winnerId": winner["id"],
         "winnerName": winner["name"],
         "payout": payout,
+        "wagerPot": wager_pot,
+        "wagerPayouts": wager_payouts,
         "duration": race.get("duration", 60),
         "players": [
             {
@@ -539,6 +601,10 @@ def finish_race(room):
     room["last_race"] = result
     room["race"] = None
     add_event(room, f"{winner['name']} gagne la course avec {int(winner.get('score', 0))} points ({payout} jetons).", "race")
+    if wager_pot and winning_wager_total > 0:
+        add_event(room, f"Paris course: {wager_pot} jetons repartis sur les bons pronostics.", "race")
+    elif wager_pot:
+        add_event(room, f"Paris course: aucun bon pronostic sur {winner['name']}.", "race")
     add_big_win(room, winner["name"], "course", payout)
     return result, ""
 
@@ -548,6 +614,8 @@ def public_race(room, current_id=""):
     if not race:
         return None
     now = time.time()
+    betting_deadline = race_betting_deadline(race) if race.get("status") == "running" else 0
+    wagers = list(race.get("wagers", {}).values())
     return {
         "id": race["id"],
         "hostId": race.get("hostId"),
@@ -555,6 +623,22 @@ def public_race(room, current_id=""):
         "duration": race.get("duration", 60),
         "status": race.get("status", "lobby"),
         "remaining": max(0, race.get("ends_at", now) - now) if race.get("status") == "running" else race.get("duration", 60),
+        "bettingOpen": race.get("status") == "running" and now <= betting_deadline,
+        "bettingRemaining": max(0, betting_deadline - now) if race.get("status") == "running" else 0,
+        "wagerPot": sum(max(0, int(w.get("amount", 0))) for w in wagers),
+        "myWager": next(({
+            "targetId": w.get("targetId"),
+            "targetName": w.get("targetName", "Joueur"),
+            "amount": w.get("amount", 0),
+        } for w in wagers if w.get("id") == current_id), None),
+        "wagersByTarget": [
+            {
+                "targetId": pid,
+                "targetName": player.get("name", "Joueur"),
+                "amount": sum(max(0, int(w.get("amount", 0))) for w in wagers if w.get("targetId") == pid),
+            }
+            for pid, player in race.get("players", {}).items()
+        ],
         "players": [
             {
                 "id": pid,
@@ -562,6 +646,7 @@ def public_race(room, current_id=""):
                 "bet": player.get("bet", 0),
                 "score": player.get("score", 0),
                 "self": pid == current_id,
+                "participant": True,
                 "host": pid == race.get("hostId"),
             }
             for pid, player in race.get("players", {}).items()
@@ -750,6 +835,12 @@ class Handler(SimpleHTTPRequestHandler):
             if error:
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id), "lastRace": room.get("last_race")})
+        elif action_type == "race_wager":
+            target_id = safe_text(action.get("targetId", ""), "", 100)
+            race, error = place_race_wager(room, player_id, name, target_id, amount, chips)
+            if error:
+                return self.send_json({"ok": False, "error": error}, 409)
+            return self.send_json({"ok": True, "race": public_race(room, player_id)})
 
         clean()
         self.send_json({"ok": True})
