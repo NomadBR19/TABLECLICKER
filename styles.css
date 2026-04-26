@@ -687,6 +687,20 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
     inset 0 -18px 36px rgba(0, 0, 0, .32),
     0 13px 0 rgba(0, 0, 0, .36),
     0 25px 42px rgba(0, 0, 0, .34);
+  overflow: hidden;
+}
+
+.slot-cabinet::before {
+  content: "";
+  position: absolute;
+  inset: -12% -6%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 12%, rgba(255, 236, 156, .18), transparent 26%),
+    radial-gradient(circle at 50% 58%, rgba(69, 214, 134, .1), transparent 34%);
+  opacity: .9;
+  transition: opacity .25s ease, transform .35s ease;
+  transform: scale(1);
 }
 
 #slots[data-slot-level="argent"] .slot-cabinet {
@@ -769,6 +783,17 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
   overflow: hidden;
 }
 
+.slot-reels::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .14), transparent 16%, transparent 82%, rgba(0, 0, 0, .22)),
+    linear-gradient(90deg, rgba(255, 255, 255, .04), transparent 12%, transparent 88%, rgba(255, 255, 255, .03));
+  mix-blend-mode: screen;
+}
+
 .slot-reels::before {
   content: "";
   position: absolute;
@@ -801,6 +826,18 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
     inset 0 -16px 24px rgba(0, 0, 0, .28),
     0 2px 0 rgba(255, 245, 180, .08);
   transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease, filter .16s ease;
+  overflow: hidden;
+}
+
+.slot-reel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, .42), rgba(255, 255, 255, 0) 28% 72%, rgba(0, 0, 0, .08)),
+    linear-gradient(180deg, rgba(255, 255, 255, .14), transparent 40%);
+  opacity: .9;
 }
 
 .slot-reel[data-symbol="seven"],
@@ -834,6 +871,35 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
     inset 0 -16px 24px rgba(0, 0, 0, .18),
     0 0 22px rgba(255, 211, 90, .62),
     0 7px 0 rgba(0, 0, 0, .28);
+}
+
+#slots[data-slot-tone="win"] .slot-cabinet::before {
+  opacity: 1;
+  transform: scale(1.02);
+}
+
+#slots[data-slot-tone="mega"] .slot-cabinet::before {
+  opacity: 1;
+  transform: scale(1.04);
+  background:
+    radial-gradient(circle at 50% 10%, rgba(255, 240, 175, .24), transparent 28%),
+    radial-gradient(circle at 50% 60%, rgba(69, 214, 134, .14), transparent 38%);
+}
+
+#slots[data-slot-tone="jackpot"] .slot-cabinet::before {
+  opacity: 1;
+  transform: scale(1.06);
+  background:
+    radial-gradient(circle at 50% 10%, rgba(255, 248, 192, .34), transparent 30%),
+    radial-gradient(circle at 50% 56%, rgba(255, 211, 90, .18), transparent 42%);
+}
+
+#slots[data-slot-tone="mega"] .slot-reels,
+#slots[data-slot-tone="jackpot"] .slot-reels {
+  box-shadow:
+    inset 0 0 28px rgba(0, 0, 0, .44),
+    0 8px 0 rgba(0, 0, 0, .36),
+    0 0 24px rgba(255, 211, 90, .12);
 }
 
 .slot-reel.near {
@@ -927,6 +993,7 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
     linear-gradient(90deg, rgba(255, 211, 90, .2), rgba(69, 214, 134, .08)),
     rgba(0, 0, 0, .28);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 0 18px rgba(255, 211, 90, .12);
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease, background .2s ease;
 }
 
 .slot-jackpot span {
@@ -941,6 +1008,35 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
   color: #fff3b9;
   font-size: 1.35rem;
   text-shadow: 0 3px 0 rgba(0, 0, 0, .38), 0 0 16px rgba(255, 211, 90, .32);
+}
+
+#slots[data-jackpot-tier="surge"] .slot-jackpot {
+  border-color: rgba(255, 211, 90, .54);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 0 22px rgba(255, 211, 90, .2);
+}
+
+#slots[data-jackpot-tier="crown"] .slot-jackpot {
+  border-color: rgba(255, 227, 140, .72);
+  background:
+    linear-gradient(90deg, rgba(255, 211, 90, .28), rgba(69, 214, 134, .1)),
+    rgba(0, 0, 0, .3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 0 28px rgba(255, 211, 90, .28);
+}
+
+#slots[data-jackpot-tier="meteor"] .slot-jackpot {
+  border-color: rgba(255, 243, 187, .88);
+  background:
+    linear-gradient(90deg, rgba(255, 211, 90, .36), rgba(255, 120, 80, .14)),
+    rgba(0, 0, 0, .32);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), 0 0 36px rgba(255, 211, 90, .34);
+}
+
+.slot-jackpot.pulse-rise {
+  animation: jackpotRise .52s cubic-bezier(.12, .82, .22, 1);
+}
+
+.slot-jackpot.pulse-drop {
+  animation: jackpotDrop .62s cubic-bezier(.12, .82, .22, 1);
 }
 
 .slots-actions {
@@ -973,6 +1069,13 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
   border-color: rgba(255, 211, 90, .62);
   background: linear-gradient(180deg, rgba(255, 211, 90, .18), rgba(45, 26, 8, .72));
   color: #fff1b4;
+}
+
+.slots-win-lines span[data-line="jackpot"] {
+  border-color: rgba(255, 243, 187, .88);
+  background: linear-gradient(180deg, rgba(255, 211, 90, .34), rgba(74, 40, 10, .82));
+  color: #fffbe0;
+  box-shadow: 0 0 26px rgba(255, 211, 90, .32), inset 0 1px 0 rgba(255, 255, 255, .2);
 }
 
 .slots-payouts,
@@ -1022,10 +1125,56 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
   background: rgba(69, 214, 134, .1);
 }
 
+.slots-history span.jackpot {
+  border-color: rgba(255, 232, 126, .92);
+  color: #fff5bf;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 211, 90, .18), transparent 5rem),
+    rgba(71, 41, 10, .48);
+  box-shadow: 0 0 22px rgba(255, 211, 90, .16);
+}
+
 .slots-history span.push {
   border-color: rgba(255, 211, 90, .34);
   color: #ffeaa0;
   background: rgba(255, 211, 90, .08);
+}
+
+.slot-history-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: .6rem;
+  font-style: normal;
+  letter-spacing: .08em;
+  border: 1px solid rgba(255, 255, 255, .14);
+}
+
+.slot-history-badge.jackpot {
+  color: #2a1008;
+  background: linear-gradient(180deg, #fff2a5, #d8a63d);
+  border-color: rgba(255, 243, 187, .88);
+}
+
+.slot-history-badge.scatter {
+  color: #d7ffe8;
+  background: rgba(69, 214, 134, .18);
+  border-color: rgba(69, 214, 134, .42);
+}
+
+.slot-history-badge.cross {
+  color: #dbf2ff;
+  background: rgba(84, 184, 255, .16);
+  border-color: rgba(84, 184, 255, .4);
+}
+
+.slot-history-badge.near {
+  color: #fff0ba;
+  background: rgba(255, 211, 90, .14);
+  border-color: rgba(255, 211, 90, .36);
 }
 
 .stake-box {
@@ -1831,6 +1980,12 @@ label {
   overflow-wrap: anywhere;
 }
 
+.player-detail .player-jackpot {
+  color: #fff3b9;
+  font-weight: 800;
+  text-shadow: 0 0 14px rgba(255, 211, 90, .2);
+}
+
 .ready-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -1949,6 +2104,17 @@ label {
   color: #fff3b9;
 }
 
+.event-row.jackpot {
+  border-color: rgba(255, 211, 90, .9);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255, 211, 90, .32), transparent 8rem),
+    linear-gradient(180deg, rgba(62, 38, 10, .95), rgba(23, 18, 11, .95));
+  color: #fff8d0;
+  box-shadow: 0 0 0 1px rgba(255, 211, 90, .2), 0 0 26px rgba(255, 211, 90, .15);
+  font-weight: 900;
+  letter-spacing: .03em;
+}
+
 .empty-row {
   color: var(--muted);
   font-style: italic;
@@ -2050,6 +2216,31 @@ label {
   text-shadow: 0 2px 0 rgba(0, 0, 0, .55), 0 0 16px rgba(255, 211, 90, .28);
   box-shadow: 0 14px 36px rgba(0, 0, 0, .34), 0 0 24px rgba(255, 211, 90, .12);
   animation: tableAnnouncement 5.1s cubic-bezier(.12, .78, .18, 1) forwards;
+}
+
+.table-announcement.jackpot {
+  left: 50vw;
+  transform: translateX(-50%);
+  top: 12vh;
+  width: min(760px, 92vw);
+  max-width: none;
+  padding: 22px 28px;
+  border-width: 3px;
+  border-color: rgba(255, 211, 90, .92);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 248, 192, .24), transparent 13rem),
+    radial-gradient(circle at 12% 0%, rgba(255, 211, 90, .34), transparent 10rem),
+    linear-gradient(180deg, rgba(72, 39, 5, .98), rgba(18, 14, 10, .96));
+  color: #fffbe6;
+  white-space: pre-line;
+  text-align: center;
+  font-size: clamp(1.35rem, 3.1vw, 2.5rem);
+  line-height: 1.15;
+  letter-spacing: .08em;
+  text-shadow: 0 3px 0 rgba(64, 30, 0, .82), 0 0 24px rgba(255, 211, 90, .34);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, .48), 0 0 42px rgba(255, 211, 90, .28);
+  animation-duration: 6.8s;
 }
 
 @keyframes tableDrift {
@@ -2235,6 +2426,18 @@ label {
 @keyframes paylineBadge {
   from { transform: translateY(0); }
   to { transform: translateY(-1px); }
+}
+
+@keyframes jackpotRise {
+  0% { transform: translateY(0) scale(1); filter: brightness(1); }
+  45% { transform: translateY(-2px) scale(1.035); filter: brightness(1.14); }
+  100% { transform: translateY(0) scale(1); filter: brightness(1); }
+}
+
+@keyframes jackpotDrop {
+  0% { transform: translateY(0) scale(1); filter: brightness(1); }
+  35% { transform: translateY(1px) scale(.985); filter: brightness(1.08); }
+  100% { transform: translateY(0) scale(1); filter: brightness(1); }
 }
 
 @keyframes ghostFloat {
