@@ -318,9 +318,10 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
 
 .click-panel {
   display: grid;
-  grid-template-columns: minmax(210px, 1fr) minmax(116px, .48fr);
+  grid-template-columns: 1fr;
   gap: 12px;
   align-items: center;
+  justify-items: center;
   background:
     radial-gradient(circle at 50% 34%, rgba(255, 211, 90, .19), transparent 12rem),
     linear-gradient(180deg, rgba(31, 24, 31, .96), rgba(12, 15, 20, .94));
@@ -329,6 +330,7 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
 .click-panel .meter,
 .click-panel .ticker {
   grid-column: 1 / -1;
+  width: 100%;
 }
 
 .meter {
@@ -458,6 +460,7 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
   background: rgba(0, 0, 0, .2);
   animation: logPulse 4.8s ease-in-out infinite;
 }
+
 
 .section-head {
   grid-template-columns: 1fr auto;
