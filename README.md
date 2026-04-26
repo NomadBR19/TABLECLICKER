@@ -1,68 +1,150 @@
 # Table Clicker
 
-Petit jeu web clicker + casino connecte a une table commune sur le reseau local.
+Table Clicker is a browser-based clicker + casino game designed for local multiplayer sessions on a shared LAN server.
 
-## Lancer
+Players connect to the same server, join the same table automatically, chat together, see each other's activity, and share selected game systems such as the slot machine jackpot.
+
+## Run
 
 ```powershell
 python server.py
 ```
 
-Ouvre ensuite:
+Then open:
 
 ```text
 http://localhost:8000
 ```
 
-Pour jouer avec d'autres personnes du meme reseau local, donne l'adresse IP de ce PC avec le port `8000`, par exemple:
+To play with other people on the same local network, share this machine's LAN address with port `8000`, for example:
 
 ```text
 http://192.168.1.42:8000
 ```
 
-Le serveur ecoute sur `0.0.0.0:8000`, donc il est accessible depuis les interfaces reseau de ce PC. Il n'est pas publie automatiquement sur Internet, sauf si la box, un VPN, un tunnel ou une redirection de port l'expose.
+The server listens on `0.0.0.0:8000`, which makes it reachable from this PC's network interfaces. It is not exposed to the public Internet unless you explicitly publish it through port forwarding, a tunnel, VPN, reverse proxy, or similar tooling.
 
-## Table reseau unique
+## Core Idea
 
-Il n'y a pas de salons ni d'invitations.
+There is a single shared network table per server.
 
-Tous les joueurs qui ouvrent le site depuis le meme serveur rejoignent automatiquement la meme table reseau:
+There are no rooms, invites, or matchmaking flows. Any player opening the site from the same server joins the same live table automatically.
 
-- les joueurs connectes sont visibles dans la colonne de droite;
-- le chat de table reste lisible depuis tout le site;
-- le journal affiche les actions et resultats importants;
-- il n'y a plus de cagnotte commune ni de taxe sur les gains.
+That shared table includes:
 
-## Jeux
+- a live player list
+- a table-wide chat
+- a shared event log
+- multiplayer poker and race events
+- a shared, persistent slot machine jackpot
 
-- Clique le jeton pour generer des jetons.
-- Achete des ameliorations pour augmenter le clic et les revenus automatiques.
-- Joue a la roulette et au blackjack; les resultats sont annonces a la table reseau.
-- Le poker Texas Hold'em est affiche avec les autres jeux.
+## Gameplay
 
-## Roulette fantome
+Players build chips by clicking, buying upgrades, and playing several casino-style games.
 
-L'amelioration `Croupier fantome` est une amelioration tardive tres chere:
+Current game systems include:
 
-- cout de base: `250 000` jetons;
-- multiplicateur de prix: `x2.35` par niveau;
-- bonus passif: `+750 jetons/s` par niveau;
-- debloque un panneau `Roulette fantome` dans la roulette.
+- Clicker progression with passive income upgrades
+- Roulette
+- Blackjack
+- Texas Hold'em style multiplayer poker
+- A race mode with participants and spectators
+- A 3x3 slot machine with 8 paylines, cross-line bonuses, scatter diamonds, and a shared jackpot
 
-Quand elle est achetee, tu peux activer une mise automatique sur rouge ou noir. La mise minimale est de `100` jetons et le bouton `All in` n'est jamais utilise par l'automatisation. Le niveau 1 lance une roulette toutes les 60 secondes; chaque niveau reduit le delai de 7,5 secondes, avec un minimum de 30 secondes.
+## Shared Slot Jackpot
 
-Pour participer au poker, chaque joueur doit cliquer sur `Pret pour le poker` avec sa mise. La main demarre automatiquement quand au moins 2 joueurs sont prets.
+The slot machine jackpot is shared by all players connected to the same server.
 
-Le poker se joue ensuite tour par tour:
+How it works:
 
-- preflop: chaque joueur voit ses 2 cartes;
-- flop, turn, river: le board est revele progressivement;
-- a chaque phase, les joueurs encore actifs doivent choisir `Rester` ou `Se coucher`;
-- si tout le monde sauf un joueur se couche, ce joueur gagne directement;
-- si plusieurs joueurs restent jusqu'a la river, le serveur compare les mains et verse le pot au gagnant.
+- Every slot spin contributes to the same jackpot pool
+- A qualifying diamond line can trigger the jackpot
+- When one player wins it, the jackpot resets for everyone
+- A global jackpot announcement is shown to all connected players
+- The event log highlights jackpot wins
+- The player list shows the latest jackpot won by each player
 
-## Sauvegarde
+Unlike earlier versions, slot resolution is handled by the server, not by each client.
 
-La progression est sauvegardee dans le navigateur avec `localStorage`.
+## Ghost Roulette
 
-Le serveur garde les joueurs connectes, la table, le chat et les derniers evenements en memoire seulement pendant qu'il tourne. Si tu arretes `server.py`, l'etat multijoueur est reinitialise.
+The `Ghost Dealer` upgrade is a late-game upgrade that unlocks roulette automation.
+
+Its current design:
+
+- base cost: `250,000` chips
+- cost multiplier: `x2.35` per level
+- passive bonus: `+750 chips/s` per level
+- unlocks the `Ghost Roulette` control panel in roulette
+
+Once unlocked, the player can automate bets on red or black.
+
+- Minimum automated bet: `100`
+- Automation never uses the `All in` action
+- Level 1 spins every 60 seconds
+- Each additional level reduces the delay by 7.5 seconds
+- Minimum delay is 30 seconds
+
+## Multiplayer Poker
+
+Poker is table-based and requires multiple players.
+
+Flow:
+
+- Each player clicks `Ready for poker` with a chosen stake
+- The hand starts automatically when at least 2 players are ready
+- The game progresses through preflop, flop, turn, and river
+- Active players choose whether to stay in or fold
+- If only one player remains, that player wins immediately
+- Otherwise the server evaluates the final hands and awards the pot
+
+## Race Mode
+
+The race mode allows players to compete in a timed all-in event while other players can bet on the result.
+
+Highlights:
+
+- the host opens a race lobby
+- participants join before the start
+- when the race starts, participating players are reset to a clean run for that race
+- spectators can place wagers during the betting window
+- the server settles the race and spectator payouts at the end
+
+## Persistence
+
+There are two layers of persistence:
+
+- Client persistence: each player's local progression is stored in the browser with `localStorage`
+- Server persistence: shared multiplayer state is stored in `shared_state.sqlite3`
+
+What survives a browser refresh:
+
+- local player progression
+- name, upgrades, chips, and related local state
+
+What survives a server restart:
+
+- shared slot jackpot amount
+- shared slot spin count
+
+What does not fully persist across a server restart:
+
+- connected players
+- in-memory chat history
+- recent event log entries
+- live poker hands
+- live race state
+
+## Tech Notes
+
+- Frontend: plain HTML, CSS, and JavaScript
+- Backend: Python standard library HTTP server
+- No external dependencies are required
+
+## Project Structure
+
+- `index.html`: UI markup
+- `styles.css`: visual design and animations
+- `app.js`: client logic, rendering, and interactions
+- `server.py`: shared multiplayer state and server-side game resolution
+- `shared_state.sqlite3`: persisted shared multiplayer state, created automatically
