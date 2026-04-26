@@ -74,6 +74,7 @@ let rouletteHistory = [];
 let slotsBusy = false;
 let slotsAutoBusy = false;
 let slotsHistory = [];
+let lastDisplayedSlotsJackpot = SLOT_JACKPOT_SEED;
 let pokerBusy = false;
 let lastPokerGameAt = Number(localStorage.getItem("table-clicker-last-poker") || 0);
 let paidPokerHands = new Set(JSON.parse(localStorage.getItem("table-clicker-paid-poker-hands") || "[]"));
@@ -104,6 +105,7 @@ let lastAutomationWarning = "";
 let activeCelebrationFrame = 0;
 let activeCelebrationCanvas = null;
 const emojiSpriteCache = new Map();
+const prefersReducedMotion = globalThis.matchMedia ? globalThis.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
 const $ = id => document.getElementById(id);
 
@@ -326,7 +328,20 @@ function renderSlotsPanel() {
   const payouts = $("slotsPayouts");
   const level = state.slots.spins >= 200 ? "or" : state.slots.spins >= 50 ? "argent" : "bronze";
   $("slots").dataset.slotLevel = level;
-  if ($("slotsJackpot")) $("slotsJackpot").textContent = fmt.format(state.slots.jackpot);
+  const jackpotEl = $("slotsJackpot");
+  const jackpotBox = jackpotEl ? jackpotEl.closest(".slot-jackpot") : null;
+  const jackpotTier = state.slots.jackpot >= 10000 ? "meteor" : state.slots.jackpot >= 2500 ? "crown" : state.slots.jackpot >= 750 ? "surge" : "base";
+  $("slots").dataset.jackpotTier = jackpotTier;
+  if (jackpotEl) jackpotEl.textContent = fmt.format(state.slots.jackpot);
+  if (jackpotBox) {
+    const jackpotChanged = state.slots.jackpot !== lastDisplayedSlotsJackpot;
+    if (jackpotChanged) {
+      jackpotBox.classList.remove("pulse-rise", "pulse-drop");
+      void jackpotBox.offsetWidth;
+      jackpotBox.classList.add(state.slots.jackpot >= lastDisplayedSlotsJackpot ? "pulse-rise" : "pulse-drop");
+    }
+  }
+  lastDisplayedSlotsJackpot = state.slots.jackpot;
   if (!payouts || payouts.dataset.ready === "true") {
     $("slotsStatus").textContent = `${SLOT_LINES.length} lignes actives - ${level}`;
     return;
@@ -359,6 +374,24 @@ function weightedSlotSymbol() {
   return SLOT_SYMBOLS[SLOT_SYMBOLS.length - 1];
 }
 
+function slotSymbolById(id) {
+  return SLOT_SYMBOLS.find(symbol => symbol.id === id) || SLOT_SYMBOLS[0];
+}
+
+function hydrateSlotResult(result = {}) {
+  return {
+    ...result,
+    wins: (result.wins || []).map(win => {
+      const symbol = slotSymbolById(win.symbolId);
+      return {
+        ...win,
+        icon: symbol.icon,
+        label: symbol.label,
+      };
+    })
+  };
+}
+
 function winningLineSymbol(symbols) {
   const natural = symbols.find(symbol => !symbol.wild);
   if (!natural) return symbols[0];
@@ -381,7 +414,7 @@ function nearMissSlots(grid, wins) {
   return null;
 }
 
-function scoreSlots(grid, bet) {
+function scoreSlots(grid, bet, jackpotValue = state.slots.jackpot) {
   const wins = [];
   for (const line of SLOT_LINES) {
     const symbols = line.cells.map(index => grid[index]);
@@ -406,7 +439,7 @@ function scoreSlots(grid, bet) {
     scatterPayout = bet * SLOT_SCATTER_MULT;
   }
   const jackpotWin = wins.find(win => win.symbolId === "gem");
-  const jackpotPayout = jackpotWin ? state.slots.jackpot : 0;
+  const jackpotPayout = jackpotWin ? Math.max(0, Math.floor(Number(jackpotValue) || 0)) : 0;
 
   const lineTotal = wins.reduce((sum, win) => sum + win.payout, 0);
   const crossBonus = wins.length > 1 ? Math.floor(lineTotal * (wins.length - 1) * SLOT_CROSS_BONUS_RATE) : 0;
@@ -442,6 +475,16 @@ function highlightSlotPayouts(wins = [], scatterPayout = 0, jackpotPayout = 0) {
 function renderSlotGrid(grid, result = {}) {
   const wins = result.wins || [];
   const winningCells = new Set(wins.flatMap(win => win.cells));
+  const tone = result.jackpotPayout
+    ? "jackpot"
+    : result.payout >= Math.max(1, result.bet || 0) * 8
+      ? "mega"
+      : result.payout > Math.max(1, result.bet || 0)
+        ? "win"
+        : result.nearMiss
+          ? "near"
+          : "idle";
+  $("slots").dataset.slotTone = tone;
   [...document.querySelectorAll("#slotReels .slot-reel")].forEach((el, index) => {
     el.textContent = grid[index].icon;
     el.dataset.symbol = grid[index].id;
@@ -473,15 +516,30 @@ function randomSlotPreview() {
   return Array.from({ length: 9 }, () => SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)]);
 }
 
-function addSlotsHistory(grid, payout, wins, bet) {
-  slotsHistory = [{ grid, payout, bet, wins: wins.length }, ...slotsHistory].slice(0, 6);
+function addSlotsHistory(grid, payout, wins, bet, result = {}) {
+  slotsHistory = [{
+    grid,
+    payout,
+    bet,
+    wins: wins.length,
+    jackpot: Boolean(result.jackpotPayout),
+    scatter: Boolean(result.scatterPayout),
+    cross: Boolean(result.crossBonus),
+    near: Boolean(result.nearMiss),
+  }, ...slotsHistory].slice(0, 6);
   $("slotsHistory").innerHTML = slotsHistory.map(item => {
     const rows = [0, 3, 6].map(start => item.grid.slice(start, start + 3).map(symbol => escapeHtml(symbol.icon)).join("")).join("/");
     const net = item.payout - item.bet;
     const netText = net >= 0 ? `+${fmt.format(net)}` : `-${fmt.format(Math.abs(net))}`;
+    const badges = [
+      item.jackpot ? `<i class="slot-history-badge jackpot">JACKPOT</i>` : "",
+      item.scatter ? `<i class="slot-history-badge scatter">3GEM</i>` : "",
+      item.cross ? `<i class="slot-history-badge cross">X</i>` : "",
+      item.near && !item.payout ? `<i class="slot-history-badge near">PRESQUE</i>` : "",
+    ].join("");
     return `
-      <span class="${item.payout > item.bet ? "win" : item.payout > 0 ? "push" : ""}" title="${item.payout > 0 ? `Gain ${fmt.format(item.payout)}` : "Perdu"}">
-        ${rows} <b>${netText}</b>${item.wins ? ` L${item.wins}` : ""}
+      <span class="${item.payout > item.bet ? "win" : item.payout > 0 ? "push" : ""}${item.jackpot ? " jackpot" : ""}" title="${item.payout > 0 ? `Gain ${fmt.format(item.payout)}` : "Perdu"}">
+        ${rows} <b>${netText}</b>${item.wins ? ` L${item.wins}` : ""}${badges}
       </span>
     `;
   }).join("");
@@ -519,12 +577,12 @@ function previewSlotsSpin(finalGrid) {
   return () => window.clearInterval(timer);
 }
 
-function settleSlotsSpin(grid, bet, previewTimer, auto = null) {
+function settleSlotsSpin(grid, bet, previewTimer, auto = null, resolvedResult = null) {
   if (previewTimer) previewTimer();
-  const result = scoreSlots(grid, bet);
-  if (result.jackpotPayout) state.slots.jackpot = SLOT_JACKPOT_SEED;
+  const result = resolvedResult ? hydrateSlotResult(resolvedResult) : scoreSlots(grid, bet, state.slots.jackpot);
+  result.bet = bet;
   renderSlotGrid(grid, result);
-  addSlotsHistory(grid, result.payout, result.wins, bet);
+  addSlotsHistory(grid, result.payout, result.wins, bet, result);
   if (!auto) {
     log("slotsLog", `Golden Grid: ${result.text}.`);
     announceGame("machine", `Golden Grid: ${result.text}`, result.payout);
@@ -541,9 +599,6 @@ function settleSlotsSpin(grid, bet, previewTimer, auto = null) {
   }
   if (!auto && result.wins.length > 1) {
     showTableAnnouncement(`Machine: ${result.wins.length} lignes croisees`, `slots-cross-${Date.now()}`);
-  }
-  if (!auto && result.jackpotPayout) {
-    showTableAnnouncement(`Jackpot Golden Grid: ${fmt.format(result.jackpotPayout)} jetons`, `slots-jackpot-${Date.now()}`);
   }
   if (auto && auto.remaining > 1) {
     slotsBusy = false;
@@ -564,7 +619,7 @@ function settleSlotsSpin(grid, bet, previewTimer, auto = null) {
   setSlotsControlsDisabled(false);
 }
 
-function spinSlots(options = {}) {
+async function spinSlots(options = {}) {
   if (slotsBusy) return;
   const bet = Math.floor(stakes.slots);
   if (!spend(bet)) {
@@ -584,9 +639,6 @@ function spinSlots(options = {}) {
   if (auto) slotsAutoBusy = true;
   $("slots").classList.add("game-running");
   $("slotReels").classList.add("spinning");
-  state.slots.spins += 1;
-  state.slots.jackpot += Math.max(1, Math.floor(bet * SLOT_JACKPOT_CONTRIBUTION));
-  render();
   setSlotsControlsDisabled(true);
   $("slotsWinLines").innerHTML = "";
   $("slotReels").querySelectorAll(".slot-payline").forEach(line => line.remove());
@@ -594,9 +646,26 @@ function spinSlots(options = {}) {
   const spinLabel = auto ? `Auto ${SLOT_AUTO_SPINS - auto.remaining + 1}/${SLOT_AUTO_SPINS}` : "Golden Grid";
   log("slotsLog", `${spinLabel}: les 8 lignes tournent pour ${fmt.format(bet)} jetons...`);
 
-  const grid = Array.from({ length: 9 }, weightedSlotSymbol);
+  const sync = await sendTableAction({ type: "slots_spin", amount: bet }, true);
+  if (!sync.ok) {
+    gain(bet);
+    slotsBusy = false;
+    slotsAutoBusy = false;
+    $("slots").classList.remove("game-running");
+    $("slotReels").classList.remove("spinning");
+    setSlotsControlsDisabled(false);
+    log("slotsLog", sync.error || "Jackpot indisponible.");
+    render();
+    return;
+  }
+  const grid = Array.from({ length: 9 }, (_, index) => slotSymbolById((sync.grid || [])[index]));
+  if (sync.slots) {
+    state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(sync.slots.jackpot) || SLOT_JACKPOT_SEED));
+    state.slots.spins = Math.max(0, Math.floor(Number(sync.slots.spins) || 0));
+    render();
+  }
   const previewTimer = previewSlotsSpin(grid);
-  window.setTimeout(() => settleSlotsSpin(grid, bet, previewTimer, auto), SLOT_SPIN_MS);
+  window.setTimeout(() => settleSlotsSpin(grid, bet, previewTimer, auto, sync.result || null), SLOT_SPIN_MS);
 }
 
 function autoSlots10() {
@@ -817,6 +886,22 @@ function emojiSprite(emoji, size) {
   return canvas;
 }
 
+function celebrationProfile(theme = "jackpot") {
+  const area = window.innerWidth * window.innerHeight;
+  const compact = area < 700000;
+  const reduced = Boolean(prefersReducedMotion && prefersReducedMotion.matches);
+  if (reduced) {
+    return { confetti: theme === "race" ? 18 : 24, emojis: 6, frameStep: 48, duration: 1500, shake: false };
+  }
+  return {
+    confetti: theme === "race" ? (compact ? 52 : 84) : (compact ? 68 : 110),
+    emojis: compact ? 12 : 18,
+    frameStep: compact ? 40 : 33,
+    duration: compact ? 1900 : 2200,
+    shake: true,
+  };
+}
+
 function grandCelebrate(origin, theme = "jackpot") {
   const layer = $("celebrationLayer");
   if (!layer) return;
@@ -837,15 +922,16 @@ function grandCelebrate(origin, theme = "jackpot") {
   ctx.scale(dpr, dpr);
   layer.appendChild(canvas);
   activeCelebrationCanvas = canvas;
+  const profile = celebrationProfile(theme);
 
   const emojis = theme === "race"
     ? ["\u{1F3C1}", "\u{1F3C6}", "\u{1F4A5}", "\u{1F389}", "\u{2B50}", "\u{1F4B0}"]
     : ["\u{1F389}", "\u{1F4B0}", "\u{2728}", "\u{1F3C6}", "\u{1F48E}", "\u{1F525}"];
   const colors = ["#ffd35a", "#ef4c57", "#45d686", "#54b8ff", "#fff3b9", "#f08cff"];
   const particles = [];
-  shakeElements(origin, "mega");
+  if (profile.shake) shakeElements(origin, "mega");
 
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < profile.confetti; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = 4 + Math.random() * 12;
     particles.push({
@@ -862,7 +948,7 @@ function grandCelebrate(origin, theme = "jackpot") {
       life: 1700 + Math.random() * 1200
     });
   }
-  for (let i = 0; i < 34; i++) {
+  for (let i = 0; i < profile.emojis; i++) {
     const size = 18 + Math.random() * 20;
     const text = emojis[Math.floor(Math.random() * emojis.length)];
     particles.push({
@@ -883,20 +969,23 @@ function grandCelebrate(origin, theme = "jackpot") {
   const startedAt = performance.now();
   let lastFrameAt = 0;
   function animate(now) {
-    if (now - lastFrameAt < 32) {
+    if (now - lastFrameAt < profile.frameStep) {
       activeCelebrationFrame = requestAnimationFrame(animate);
       return;
     }
     lastFrameAt = now;
     const elapsed = now - startedAt;
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    particles.forEach(p => {
+    let activeCount = 0;
+    for (const p of particles) {
       p.x += p.vx;
       p.y += p.vy;
       p.vy += p.gravity;
       p.rot += p.spin;
       const alpha = Math.max(0, Math.min(1, 1 - elapsed / p.life));
-      if (alpha <= 0) return;
+      const visible = alpha > 0 && p.x > -120 && p.x < window.innerWidth + 120 && p.y < window.innerHeight + 160;
+      if (!visible) continue;
+      activeCount += 1;
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.translate(p.x, p.y);
@@ -908,8 +997,8 @@ function grandCelebrate(origin, theme = "jackpot") {
         ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 1.8);
       }
       ctx.restore();
-    });
-    if (elapsed < 2600) activeCelebrationFrame = requestAnimationFrame(animate);
+    }
+    if (elapsed < profile.duration && activeCount > 0) activeCelebrationFrame = requestAnimationFrame(animate);
     else {
       canvas.remove();
       if (activeCelebrationCanvas === canvas) activeCelebrationCanvas = null;
@@ -949,6 +1038,21 @@ function showTableAnnouncement(text, key = "") {
   el.style.top = `${y}vh`;
   layer.appendChild(el);
   window.setTimeout(() => el.remove(), 5200);
+}
+
+function showJackpotAnnouncement(text, key = "") {
+  if (key && seenBigWinEvents.has(key)) return;
+  if (key) seenBigWinEvents.add(key);
+  const layer = $("celebrationLayer");
+  if (!layer) return;
+  const el = document.createElement("div");
+  el.className = "table-announcement jackpot";
+  el.textContent = `JACKPOT\n${text}`;
+  el.style.left = "50vw";
+  el.style.top = "16vh";
+  layer.appendChild(el);
+  grandCelebrate($("slots"), "jackpot");
+  window.setTimeout(() => el.remove(), 6800);
 }
 
 function showChatAnnouncement(message, key = "") {
@@ -1501,6 +1605,11 @@ async function pollTable() {
     renderLobby(data.lobby || data.players || []);
     renderChat(data.chat || []);
     renderEvents(data.events || []);
+    if (data.slots) {
+      state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(data.slots.jackpot) || SLOT_JACKPOT_SEED));
+      state.slots.spins = Math.max(0, Math.floor(Number(data.slots.spins) || 0));
+      renderSlotsPanel();
+    }
     renderPokerReady(data.pokerReady || [], data.pokerReadyDeadline || 0);
     renderPokerHand(data.pokerHand || null);
     renderRace(data.race || null);
@@ -1520,7 +1629,7 @@ function renderRoomPlayers(players) {
 }
 
 function renderLobby(players) {
-  const key = players.map(p => `${p.id}:${p.name}:${p.ip || ""}:${p.host || ""}`).join("|");
+  const key = players.map(p => `${p.id}:${p.name}:${p.ip || ""}:${p.host || ""}:${p.lastJackpot?.amount || 0}:${p.lastJackpot?.at || 0}`).join("|");
   if (key === lastLobbyKey) return;
   lastLobbyKey = key;
   setHtmlIfChanged("onlinePlayers", players.map(p => `
@@ -1531,6 +1640,7 @@ function renderLobby(players) {
       <dl>
         <dt>IP</dt><dd>${escapeHtml(p.ip || "inconnue")}</dd>
         <dt>Host</dt><dd>${escapeHtml(p.host || "inconnu")}</dd>
+        ${p.lastJackpot?.amount ? `<dt>Jackpot</dt><dd class="player-jackpot">Dernier jackpot de ${fmt.format(p.lastJackpot.amount)} jetons</dd>` : ``}
       </dl>
     </div>
   `).join("") || `<div class="empty-row">Aucun joueur en ligne.</div>`);
@@ -1615,7 +1725,9 @@ function renderEvents(events) {
   const key = events.map(event => `${event.at}:${event.kind}:${event.text}`).join("|");
   events.forEach(event => {
     const fresh = Date.now() - Number(event.at || 0) * 1000 < 15000;
-    if ((event.kind === "bigwin" || event.kind === "announce") && fresh) {
+    if (event.kind === "jackpot" && fresh) {
+      showJackpotAnnouncement(event.text, `${event.at}:${event.text}`);
+    } else if ((event.kind === "bigwin" || event.kind === "announce") && fresh) {
       showTableAnnouncement(event.text, `${event.at}:${event.text}`);
     }
   });
