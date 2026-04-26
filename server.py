@@ -4,6 +4,7 @@ import itertools
 import json
 import random
 import socket
+import threading
 import time
 
 ROOM_NAME = "table-reseau"
@@ -17,6 +18,31 @@ MAX_EVENTS = 70
 BIG_WIN_THRESHOLD = 100000
 SUITS = ["S", "H", "D", "C"]
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+SLOT_JACKPOT_SEED = 250
+SLOT_JACKPOT_CONTRIBUTION = 0.02
+STATE_LOCK = threading.Lock()
+SLOT_SYMBOLS = [
+    {"id": "cherry", "label": "Cerise", "weight": 31, "mult": 1},
+    {"id": "lemon", "label": "Citron", "weight": 25, "mult": 2},
+    {"id": "orange", "label": "Orange", "weight": 20, "mult": 2},
+    {"id": "bell", "label": "Cloche", "weight": 13, "mult": 4},
+    {"id": "seven", "label": "Sept", "weight": 7, "mult": 8},
+    {"id": "gem", "label": "Diamant", "weight": 3, "mult": 18},
+    {"id": "star", "label": "Wild", "weight": 1, "mult": 5, "wild": True},
+]
+SLOT_SYMBOLS_BY_ID = {symbol["id"]: symbol for symbol in SLOT_SYMBOLS}
+SLOT_LINES = [
+    {"id": "top", "name": "Haut", "cells": [0, 1, 2]},
+    {"id": "middle", "name": "Milieu", "cells": [3, 4, 5]},
+    {"id": "bottom", "name": "Bas", "cells": [6, 7, 8]},
+    {"id": "left", "name": "Gauche", "cells": [0, 3, 6]},
+    {"id": "center", "name": "Centre", "cells": [1, 4, 7]},
+    {"id": "right", "name": "Droite", "cells": [2, 5, 8]},
+    {"id": "diag-a", "name": "Diagonale", "cells": [0, 4, 8]},
+    {"id": "diag-b", "name": "Diagonale", "cells": [2, 4, 6]},
+]
+SLOT_SCATTER_MULT = 3
+SLOT_CROSS_BONUS_RATE = 0.05
 
 
 def safe_text(value, fallback, limit):
@@ -38,12 +64,159 @@ def host_name(ip):
 def room_state(name=ROOM_NAME):
     name = ROOM_NAME
     if name not in ROOMS:
-        ROOMS[name] = {"players": {}, "events": [], "chat": [], "last_game": None, "poker_ready": {}, "poker_ready_deadline": 0, "poker_hand": None, "race": None, "last_race": None}
-    return ROOMS[name]
+        ROOMS[name] = {
+            "players": {},
+            "events": [],
+            "chat": [],
+            "last_game": None,
+            "poker_ready": {},
+            "poker_ready_deadline": 0,
+            "poker_hand": None,
+            "race": None,
+            "last_race": None,
+            "slots": {"jackpot": SLOT_JACKPOT_SEED, "spins": 0},
+        }
+    room = ROOMS[name]
+    room.setdefault("slots", {"jackpot": SLOT_JACKPOT_SEED, "spins": 0})
+    room["slots"]["jackpot"] = max(SLOT_JACKPOT_SEED, int(room["slots"].get("jackpot", SLOT_JACKPOT_SEED) or SLOT_JACKPOT_SEED))
+    room["slots"]["spins"] = max(0, int(room["slots"].get("spins", 0) or 0))
+    return room
+
+
+def public_slots(room):
+    slots = room.get("slots", {})
+    return {
+        "jackpot": max(SLOT_JACKPOT_SEED, int(slots.get("jackpot", SLOT_JACKPOT_SEED) or SLOT_JACKPOT_SEED)),
+        "spins": max(0, int(slots.get("spins", 0) or 0)),
+    }
+
+
+def weighted_slot_symbol():
+    total = sum(symbol["weight"] for symbol in SLOT_SYMBOLS)
+    roll = random.random() * total
+    for symbol in SLOT_SYMBOLS:
+        roll -= symbol["weight"]
+        if roll <= 0:
+            return symbol
+    return SLOT_SYMBOLS[-1]
+
+
+def winning_line_symbol(symbols):
+    natural = next((symbol for symbol in symbols if not symbol.get("wild")), None)
+    if not natural:
+        return symbols[0]
+    if all(symbol.get("wild") or symbol["id"] == natural["id"] for symbol in symbols):
+        return natural
+    return None
+
+
+def near_miss_slots(grid, wins):
+    if wins:
+        return None
+    best_symbols = {"seven", "gem", "star"}
+    for line in SLOT_LINES:
+        symbols = [grid[index] for index in line["cells"]]
+        counts = {}
+        for symbol in symbols:
+            if not symbol.get("wild"):
+                counts[symbol["id"]] = counts.get(symbol["id"], 0) + 1
+        for symbol_id, count in counts.items():
+            if count == 2 and symbol_id in best_symbols:
+                return {**line, "symbolId": symbol_id}
+    return None
+
+
+def score_slots(grid, bet, jackpot_value):
+    wins = []
+    for line in SLOT_LINES:
+        symbols = [grid[index] for index in line["cells"]]
+        symbol = winning_line_symbol(symbols)
+        if symbol:
+            wins.append({
+                **line,
+                "label": symbol["label"],
+                "symbolId": symbol["id"],
+                "payout": bet * symbol["mult"],
+            })
+
+    counts = {}
+    for symbol in grid:
+        counts[symbol["id"]] = counts.get(symbol["id"], 0) + 1
+
+    scatter_payout = bet * SLOT_SCATTER_MULT if counts.get("gem", 0) >= 3 else 0
+    jackpot_win = next((win for win in wins if win["symbolId"] == "gem"), None)
+    jackpot_payout = jackpot_value if jackpot_win else 0
+    line_total = sum(win["payout"] for win in wins)
+    cross_bonus = int(line_total * (len(wins) - 1) * SLOT_CROSS_BONUS_RATE) if len(wins) > 1 else 0
+    payout = line_total + scatter_payout + cross_bonus + jackpot_payout
+    near_miss = near_miss_slots(grid, wins)
+    if not payout:
+        text = f"Presque {near_miss['name']}. Perdu {bet}" if near_miss else f"Aucune ligne. Perdu {bet}"
+        return {
+            "payout": 0,
+            "wins": wins,
+            "scatterPayout": scatter_payout,
+            "crossBonus": cross_bonus,
+            "jackpotPayout": jackpot_payout,
+            "nearMiss": near_miss,
+            "text": text,
+        }
+
+    parts = []
+    if wins:
+        parts.append(f"{len(wins)} ligne{'s' if len(wins) > 1 else ''}")
+    if scatter_payout:
+        parts.append("bonus diamants")
+    if cross_bonus:
+        parts.append("bonus croise")
+    if jackpot_payout:
+        parts.append("jackpot")
+    return {
+        "payout": payout,
+        "wins": wins,
+        "scatterPayout": scatter_payout,
+        "crossBonus": cross_bonus,
+        "jackpotPayout": jackpot_payout,
+        "nearMiss": near_miss,
+        "text": f"{', '.join(parts)}. Gain {payout}",
+    }
+
+
+def record_player_jackpot(player, amount):
+    player["lastJackpot"] = {
+        "amount": max(0, int(amount or 0)),
+        "at": time.time(),
+    }
+
+
+def resolve_slots_spin(room, player_id, player_name, amount):
+    slots = room.setdefault("slots", {"jackpot": SLOT_JACKPOT_SEED, "spins": 0})
+    amount = max(0, int(amount or 0))
+    slots["spins"] = max(0, int(slots.get("spins", 0) or 0)) + 1
+    slots["jackpot"] = max(SLOT_JACKPOT_SEED, int(slots.get("jackpot", SLOT_JACKPOT_SEED) or SLOT_JACKPOT_SEED))
+    slots["jackpot"] += max(1, int(amount * SLOT_JACKPOT_CONTRIBUTION))
+    jackpot_value = slots["jackpot"]
+    grid = [weighted_slot_symbol() for _ in range(9)]
+    result = score_slots(grid, amount, jackpot_value)
+    if result["jackpotPayout"]:
+        slots["jackpot"] = SLOT_JACKPOT_SEED
+        player = room.get("players", {}).get(player_id)
+        if player is not None:
+            record_player_jackpot(player, result["jackpotPayout"])
+        if player_id in PLAYERS:
+            record_player_jackpot(PLAYERS[player_id], result["jackpotPayout"])
+        add_event(room, f"{player_name} decroche le JACKPOT Golden Grid: {result['jackpotPayout']} jetons.", "jackpot")
+        add_big_win(room, player_name, "machine", result["jackpotPayout"])
+    return {
+        "grid": [symbol["id"] for symbol in grid],
+        "result": result,
+        "slots": public_slots(room),
+    }
 
 
 def touch_player(player_id, name, chips, ip="", room=ROOM_NAME):
     ip = safe_text(ip, "local", 45)
+    previous = PLAYERS.get(player_id, {})
     PLAYERS[player_id] = {
         "id": player_id,
         "name": name,
@@ -52,6 +225,7 @@ def touch_player(player_id, name, chips, ip="", room=ROOM_NAME):
         "host": host_name(ip),
         "room": ROOM_NAME,
         "seen": time.time(),
+        "lastJackpot": previous.get("lastJackpot"),
     }
 
 
@@ -131,6 +305,7 @@ def public_players(current_id=""):
                 "chips": p["chips"],
                 "ip": p.get("ip", ""),
                 "host": p.get("host", ""),
+                "lastJackpot": p.get("lastJackpot"),
                 "room": ROOM_NAME,
                 "self": pid == current_id,
             }
@@ -704,6 +879,7 @@ class Handler(SimpleHTTPRequestHandler):
             "name": player_name,
             "chips": chips,
             "seen": time.time(),
+            "lastJackpot": PLAYERS.get(player_id, {}).get("lastJackpot"),
         }
         clean()
         ready_players = room.get("poker_ready", {})
@@ -718,6 +894,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "chips": p["chips"],
                         "self": pid == player_id,
                         "pokerReady": pid in ready_players,
+                        "lastJackpot": p.get("lastJackpot"),
                     }
                     for pid, p in room["players"].items()
                 ],
@@ -729,6 +906,7 @@ class Handler(SimpleHTTPRequestHandler):
             "lastGame": room.get("last_game"),
             "pokerHand": public_poker_hand(room, player_id),
             "race": public_race(room, player_id),
+            "slots": public_slots(room),
             "lastRace": room.get("last_race"),
             "pokerReady": [
                 {
@@ -763,9 +941,9 @@ class Handler(SimpleHTTPRequestHandler):
         room = room_state()
         player = room["players"].setdefault(
             player_id,
-            {"name": name, "chips": chips, "seen": time.time()},
+            {"name": name, "chips": chips, "seen": time.time(), "lastJackpot": PLAYERS.get(player_id, {}).get("lastJackpot")},
         )
-        player.update({"name": name, "chips": chips, "seen": time.time()})
+        player.update({"name": name, "chips": chips, "seen": time.time(), "lastJackpot": player.get("lastJackpot") or PLAYERS.get(player_id, {}).get("lastJackpot")})
 
         amount = max(0, int(float(action.get("amount", 0) or 0)))
         if action_type == "join":
@@ -847,6 +1025,10 @@ class Handler(SimpleHTTPRequestHandler):
             if error:
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id)})
+        elif action_type == "slots_spin":
+            with STATE_LOCK:
+                result = resolve_slots_spin(room, player_id, name, amount)
+            return self.send_json({"ok": True, **result})
 
         clean()
         self.send_json({"ok": True})
