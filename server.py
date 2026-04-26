@@ -655,6 +655,12 @@ def public_race(room, current_id=""):
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        try:
+            super().log_message(format, *args)
+        except OSError:
+            pass
+
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
