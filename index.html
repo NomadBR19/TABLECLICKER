@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Table Clicker</title>
-  <link rel="stylesheet" href="styles.css?v=20">
+  <link rel="stylesheet" href="styles.css?v=22">
 </head>
 <body>
   <main class="app-shell">
@@ -168,6 +168,61 @@
             <p id="blackjackLog" class="game-log">Blackjack pret.</p>
           </section>
 
+          <section id="slots" class="game-view game-card">
+            <div class="game-title">
+              <h3>Machine a sous</h3>
+              <span id="slotsStatus">8 lignes actives</span>
+            </div>
+            <div class="slot-machine-board">
+              <div class="slot-cabinet">
+                <div class="slot-marquee">
+                  <strong>Golden Grid</strong>
+                  <span>lignes, diagonales, croisements</span>
+                </div>
+                <div id="slotReels" class="slot-reels" aria-label="Grille de machine a sous">
+                  <div class="slot-reel" data-symbol="seven">7</div>
+                  <div class="slot-reel" data-symbol="gem">&#128142;</div>
+                  <div class="slot-reel" data-symbol="seven">7</div>
+                  <div class="slot-reel" data-symbol="cherry">&#127826;</div>
+                  <div class="slot-reel" data-symbol="star">&#11088;</div>
+                  <div class="slot-reel" data-symbol="cherry">&#127826;</div>
+                  <div class="slot-reel" data-symbol="bell">&#128276;</div>
+                  <div class="slot-reel" data-symbol="gem">&#128142;</div>
+                  <div class="slot-reel" data-symbol="bell">&#128276;</div>
+                </div>
+                <div id="slotsWinLines" class="slots-win-lines"></div>
+              </div>
+              <div class="slots-controls">
+                <div class="stake-box">
+                  <span>Mise</span>
+                  <strong id="slotsStake">25</strong>
+                </div>
+                <div class="slot-jackpot">
+                  <span>Jackpot</span>
+                  <strong id="slotsJackpot">250</strong>
+                </div>
+                <div class="stake-buttons" data-stake-game="slots">
+                  <button data-stake-tier-down>Down</button>
+                  <button data-stake-step="0">+25</button>
+                  <button data-stake-step="1">+50</button>
+                  <button data-stake-step="2">+100</button>
+                  <button data-stake-step="3">+1000</button>
+                  <button data-stake-tier-up>Up</button>
+                  <button data-stake-all>All in</button>
+                  <button data-stake-sub>-25</button>
+                  <button data-stake-clear>Vider</button>
+                </div>
+                <div id="slotsPayouts" class="slots-payouts"></div>
+                <div id="slotsHistory" class="slots-history" aria-label="Derniers tirages machines a sous"></div>
+                <div class="action-row slots-actions">
+                  <button id="spinSlots" class="primary-action">Lancer</button>
+                  <button id="autoSlots10">Auto x10</button>
+                </div>
+              </div>
+            </div>
+            <p id="slotsLog" class="game-log">La machine attend une mise.</p>
+          </section>
+
           <section id="poker" class="game-view game-card">
             <div class="game-title">
               <h3>Texas Hold'em</h3>
@@ -280,6 +335,6 @@
 
   <div id="players" hidden></div>
   <div id="celebrationLayer" class="celebration-layer" aria-hidden="true"></div>
-  <script src="app.js?v=34"></script>
+  <script src="app.js?v=36"></script>
 </body>
 </html>
