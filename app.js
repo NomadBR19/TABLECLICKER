@@ -6,6 +6,32 @@ const suitLabels = { S: "♠", H: "♥", D: "♦", C: "♣" };
 const rouletteSegment = 360 / 37;
 const SHARED_ROOM = "table-reseau";
 
+const SLOT_SYMBOLS = [
+  { id: "cherry", icon: "\uD83C\uDF52", label: "Cerise", weight: 31, mult: 1 },
+  { id: "lemon", icon: "\uD83C\uDF4B", label: "Citron", weight: 25, mult: 2 },
+  { id: "orange", icon: "\uD83C\uDF4A", label: "Orange", weight: 20, mult: 2 },
+  { id: "bell", icon: "\uD83D\uDD14", label: "Cloche", weight: 13, mult: 4 },
+  { id: "seven", icon: "7", label: "Sept", weight: 7, mult: 8 },
+  { id: "gem", icon: "\uD83D\uDC8E", label: "Diamant", weight: 3, mult: 18 },
+  { id: "star", icon: "\u2B50", label: "Wild", weight: 1, mult: 5, wild: true }
+];
+const SLOT_LINES = [
+  { id: "top", name: "Haut", cells: [0, 1, 2] },
+  { id: "middle", name: "Milieu", cells: [3, 4, 5] },
+  { id: "bottom", name: "Bas", cells: [6, 7, 8] },
+  { id: "left", name: "Gauche", cells: [0, 3, 6] },
+  { id: "center", name: "Centre", cells: [1, 4, 7] },
+  { id: "right", name: "Droite", cells: [2, 5, 8] },
+  { id: "diag-a", name: "Diagonale", cells: [0, 4, 8] },
+  { id: "diag-b", name: "Diagonale", cells: [2, 4, 6] }
+];
+const SLOT_SPIN_MS = 1600;
+const SLOT_SCATTER_MULT = 3;
+const SLOT_CROSS_BONUS_RATE = .05;
+const SLOT_AUTO_SPINS = 10;
+const SLOT_JACKPOT_SEED = 250;
+const SLOT_JACKPOT_CONTRIBUTION = .02;
+
 const upgrades = [
   { id: "finger", name: "Doigt sur", desc: "+1 par clic", base: 15, mult: 1.35, click: 1, cps: 0 },
   { id: "dealer", name: "Croupier auto", desc: "+1 jeton/s", base: 60, mult: 1.42, click: 0, cps: 1 },
@@ -39,12 +65,15 @@ let room = SHARED_ROOM;
 let playerId = getPlayerId();
 let lastTick = performance.now();
 let bj = null;
-let stakes = { roulette: 25, blackjack: 40, poker: 50 };
+let stakes = { roulette: 25, blackjack: 40, poker: 50, slots: 25 };
 let stakeTier = Math.max(0, Math.min(MAX_STAKE_TIER, Math.floor(Number(localStorage.getItem("table-clicker-stake-tier")) || 0)));
 let rouletteChoice = "red";
 let rouletteSpin = 0;
 let rouletteBusy = false;
 let rouletteHistory = [];
+let slotsBusy = false;
+let slotsAutoBusy = false;
+let slotsHistory = [];
 let pokerBusy = false;
 let lastPokerGameAt = Number(localStorage.getItem("table-clicker-last-poker") || 0);
 let paidPokerHands = new Set(JSON.parse(localStorage.getItem("table-clicker-paid-poker-hands") || "[]"));
@@ -106,6 +135,9 @@ function normalizeState() {
     if (!Number.isFinite(state.upgrades[u.id])) state.upgrades[u.id] = 0;
   });
   state.stats = state.stats || { gambled: 0, won: 0 };
+  state.slots = state.slots || {};
+  state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(state.slots.jackpot) || SLOT_JACKPOT_SEED));
+  state.slots.spins = Math.max(0, Math.floor(Number(state.slots.spins) || 0));
   state.automation = state.automation || {};
   state.automation.roulette = {
     ...DEFAULT_AUTOMATION.roulette,
@@ -184,7 +216,9 @@ function render(forceUpgrades = false) {
   $("rouletteStake").textContent = fmt.format(stakes.roulette);
   $("blackjackStake").textContent = fmt.format(stakes.blackjack);
   $("pokerStake").textContent = fmt.format(stakes.poker);
+  $("slotsStake").textContent = fmt.format(stakes.slots);
   renderStakeTierControls();
+  renderSlotsPanel();
   $("raceScore").textContent = fmt.format(raceScore);
   updatePokerAvailability();
   updateRaceControls();
@@ -286,6 +320,290 @@ function playRoulette(options = {}) {
     rouletteBusy = false;
     $("spinRoulette").disabled = false;
   }, ROULETTE_SPIN_MS);
+}
+
+function renderSlotsPanel() {
+  const payouts = $("slotsPayouts");
+  const level = state.slots.spins >= 200 ? "or" : state.slots.spins >= 50 ? "argent" : "bronze";
+  $("slots").dataset.slotLevel = level;
+  if ($("slotsJackpot")) $("slotsJackpot").textContent = fmt.format(state.slots.jackpot);
+  if (!payouts || payouts.dataset.ready === "true") {
+    $("slotsStatus").textContent = `${SLOT_LINES.length} lignes actives - ${level}`;
+    return;
+  }
+  payouts.dataset.ready = "true";
+  const wild = SLOT_SYMBOLS.find(symbol => symbol.wild);
+  const gem = SLOT_SYMBOLS.find(symbol => symbol.id === "gem");
+  payouts.innerHTML = SLOT_SYMBOLS.filter(symbol => !symbol.wild).slice().reverse().map(symbol => `
+    <span data-symbol="${escapeHtml(symbol.id)}"><b>${escapeHtml(symbol.icon)}${escapeHtml(symbol.icon)}${escapeHtml(symbol.icon)}</b> x${symbol.mult}</span>
+  `).join("") + `<span data-symbol="${escapeHtml(wild.id)}"><b>${escapeHtml(wild.icon.repeat(3))}</b> x${wild.mult}</span><span data-symbol="scatter-gem"><b>3${escapeHtml(gem.icon)}</b> bonus x${SLOT_SCATTER_MULT}</span>`;
+  $("slotsStatus").textContent = `${SLOT_LINES.length} lignes actives - ${level}`;
+}
+
+function setSlotsControlsDisabled(disabled) {
+  $("spinSlots").disabled = disabled;
+  $("autoSlots10").disabled = disabled;
+  document.querySelectorAll("[data-stake-game=\"slots\"] button").forEach(btn => {
+    btn.disabled = disabled;
+  });
+  if (!disabled) renderStakeTierControls();
+}
+
+function weightedSlotSymbol() {
+  const total = SLOT_SYMBOLS.reduce((sum, symbol) => sum + symbol.weight, 0);
+  let roll = Math.random() * total;
+  for (const symbol of SLOT_SYMBOLS) {
+    roll -= symbol.weight;
+    if (roll <= 0) return symbol;
+  }
+  return SLOT_SYMBOLS[SLOT_SYMBOLS.length - 1];
+}
+
+function winningLineSymbol(symbols) {
+  const natural = symbols.find(symbol => !symbol.wild);
+  if (!natural) return symbols[0];
+  return symbols.every(symbol => symbol.wild || symbol.id === natural.id) ? natural : null;
+}
+
+function nearMissSlots(grid, wins) {
+  if (wins.length) return null;
+  const bestSymbols = new Set(["seven", "gem", "star"]);
+  for (const line of SLOT_LINES) {
+    const symbols = line.cells.map(index => grid[index]);
+    const counts = symbols.reduce((map, symbol) => {
+      if (!symbol.wild) map.set(symbol.id, (map.get(symbol.id) || 0) + 1);
+      return map;
+    }, new Map());
+    for (const [id, count] of counts) {
+      if (count === 2 && bestSymbols.has(id)) return { ...line, symbolId: id };
+    }
+  }
+  return null;
+}
+
+function scoreSlots(grid, bet) {
+  const wins = [];
+  for (const line of SLOT_LINES) {
+    const symbols = line.cells.map(index => grid[index]);
+    const symbol = winningLineSymbol(symbols);
+    if (symbol) {
+      wins.push({
+        ...line,
+        icon: symbol.icon,
+        label: symbol.label,
+        symbolId: symbol.id,
+        payout: bet * symbol.mult,
+      });
+    }
+  }
+
+  const counts = grid.reduce((map, symbol) => {
+    map.set(symbol.id, (map.get(symbol.id) || 0) + 1);
+    return map;
+  }, new Map());
+  let scatterPayout = 0;
+  if ((counts.get("gem") || 0) >= 3) {
+    scatterPayout = bet * SLOT_SCATTER_MULT;
+  }
+  const jackpotWin = wins.find(win => win.symbolId === "gem");
+  const jackpotPayout = jackpotWin ? state.slots.jackpot : 0;
+
+  const lineTotal = wins.reduce((sum, win) => sum + win.payout, 0);
+  const crossBonus = wins.length > 1 ? Math.floor(lineTotal * (wins.length - 1) * SLOT_CROSS_BONUS_RATE) : 0;
+  const payout = lineTotal + scatterPayout + crossBonus + jackpotPayout;
+  const nearMiss = nearMissSlots(grid, wins);
+  if (!payout) return { payout: 0, wins, scatterPayout, crossBonus, jackpotPayout, nearMiss, text: nearMiss ? `Presque ${nearMiss.name}. Perdu ${fmt.format(bet)}` : `Aucune ligne. Perdu ${fmt.format(bet)}` };
+
+  const parts = [];
+  if (wins.length) parts.push(`${wins.length} ligne${wins.length > 1 ? "s" : ""}`);
+  if (scatterPayout) parts.push("bonus diamants");
+  if (crossBonus) parts.push("bonus croise");
+  if (jackpotPayout) parts.push("jackpot");
+  return {
+    payout,
+    wins,
+    scatterPayout,
+    crossBonus,
+    jackpotPayout,
+    nearMiss,
+    text: `${parts.join(", ")}. Gain ${fmt.format(payout)}`
+  };
+}
+
+function highlightSlotPayouts(wins = [], scatterPayout = 0, jackpotPayout = 0) {
+  document.querySelectorAll("#slotsPayouts span").forEach(el => {
+    const active = wins.some(win => win.symbolId === el.dataset.symbol)
+      || (scatterPayout && el.dataset.symbol === "scatter-gem")
+      || (jackpotPayout && el.dataset.symbol === "gem");
+    el.classList.toggle("active", Boolean(active));
+  });
+}
+
+function renderSlotGrid(grid, result = {}) {
+  const wins = result.wins || [];
+  const winningCells = new Set(wins.flatMap(win => win.cells));
+  [...document.querySelectorAll("#slotReels .slot-reel")].forEach((el, index) => {
+    el.textContent = grid[index].icon;
+    el.dataset.symbol = grid[index].id;
+    el.setAttribute("aria-label", grid[index].label);
+    el.classList.toggle("win", winningCells.has(index));
+    el.classList.toggle("near", Boolean(result.nearMiss && result.nearMiss.cells.includes(index)));
+    el.style.setProperty("--i", index);
+  });
+  const lines = $("slotsWinLines");
+  const reels = $("slotReels");
+  if (reels) {
+    reels.querySelectorAll(".slot-payline").forEach(line => line.remove());
+    wins.forEach(win => {
+      const line = document.createElement("i");
+      line.className = "slot-payline";
+      line.dataset.line = win.id;
+      line.setAttribute("aria-hidden", "true");
+      reels.appendChild(line);
+    });
+  }
+  highlightSlotPayouts(wins, result.scatterPayout, result.jackpotPayout);
+  if (!lines) return;
+  lines.innerHTML = wins.map(win => `
+    <span data-line="${escapeHtml(win.id)}">${escapeHtml(win.name)} ${escapeHtml(win.icon)} x${fmt.format(win.payout)}</span>
+  `).join("") + (result.jackpotPayout ? `<span data-line="jackpot">Jackpot +${fmt.format(result.jackpotPayout)}</span>` : "") + (!wins.length && result.nearMiss ? `<span class="near-miss" data-line="${escapeHtml(result.nearMiss.id)}">Presque ${escapeHtml(result.nearMiss.name)}</span>` : "");
+}
+
+function randomSlotPreview() {
+  return Array.from({ length: 9 }, () => SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)]);
+}
+
+function addSlotsHistory(grid, payout, wins, bet) {
+  slotsHistory = [{ grid, payout, bet, wins: wins.length }, ...slotsHistory].slice(0, 6);
+  $("slotsHistory").innerHTML = slotsHistory.map(item => {
+    const rows = [0, 3, 6].map(start => item.grid.slice(start, start + 3).map(symbol => escapeHtml(symbol.icon)).join("")).join("/");
+    const net = item.payout - item.bet;
+    const netText = net >= 0 ? `+${fmt.format(net)}` : `-${fmt.format(Math.abs(net))}`;
+    return `
+      <span class="${item.payout > item.bet ? "win" : item.payout > 0 ? "push" : ""}" title="${item.payout > 0 ? `Gain ${fmt.format(item.payout)}` : "Perdu"}">
+        ${rows} <b>${netText}</b>${item.wins ? ` L${item.wins}` : ""}
+      </span>
+    `;
+  }).join("");
+}
+
+function previewSlotsSpin(finalGrid) {
+  const reelEls = [...document.querySelectorAll("#slotReels .slot-reel")];
+  const startedAt = performance.now();
+  const columnStopAt = [780, 1060, 1340];
+  let ticks = 0;
+  const timer = window.setInterval(() => {
+    const elapsed = performance.now() - startedAt;
+    reelEls.forEach((el, index) => {
+      const col = index % 3;
+      if (elapsed >= columnStopAt[col]) {
+        const finalSymbol = finalGrid[index];
+        if (el.dataset.symbol !== finalSymbol.id) {
+          el.textContent = finalSymbol.icon;
+          el.dataset.symbol = finalSymbol.id;
+          el.setAttribute("aria-label", finalSymbol.label);
+          el.classList.add("settled");
+        }
+        return;
+      }
+      const symbol = SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+      el.textContent = symbol.icon;
+      el.dataset.symbol = symbol.id;
+      el.setAttribute("aria-label", symbol.label);
+      el.classList.remove("win", "near", "settled");
+      el.style.setProperty("--i", index);
+    });
+    ticks += 1;
+    if (ticks >= 22) window.clearInterval(timer);
+  }, 70);
+  return () => window.clearInterval(timer);
+}
+
+function settleSlotsSpin(grid, bet, previewTimer, auto = null) {
+  if (previewTimer) previewTimer();
+  const result = scoreSlots(grid, bet);
+  if (result.jackpotPayout) state.slots.jackpot = SLOT_JACKPOT_SEED;
+  renderSlotGrid(grid, result);
+  addSlotsHistory(grid, result.payout, result.wins, bet);
+  if (!auto) {
+    log("slotsLog", `Golden Grid: ${result.text}.`);
+    announceGame("machine", `Golden Grid: ${result.text}`, result.payout);
+  }
+  settleBet(bet, result.payout, "La machine a sous rend son verdict.", $("slots"));
+  setSlotsControlsDisabled(true);
+  $("slotReels").classList.remove("spinning");
+  document.querySelectorAll("#slotReels .slot-reel").forEach(el => el.classList.remove("settled"));
+  if (auto) {
+    auto.totalBet += bet;
+    auto.totalPayout += result.payout;
+    auto.bestPayout = Math.max(auto.bestPayout, result.payout);
+    auto.jackpots = (auto.jackpots || 0) + (result.jackpotPayout ? 1 : 0);
+  }
+  if (!auto && result.wins.length > 1) {
+    showTableAnnouncement(`Machine: ${result.wins.length} lignes croisees`, `slots-cross-${Date.now()}`);
+  }
+  if (!auto && result.jackpotPayout) {
+    showTableAnnouncement(`Jackpot Golden Grid: ${fmt.format(result.jackpotPayout)} jetons`, `slots-jackpot-${Date.now()}`);
+  }
+  if (auto && auto.remaining > 1) {
+    slotsBusy = false;
+    window.setTimeout(() => spinSlots({ auto: { ...auto, remaining: auto.remaining - 1 } }), 420);
+    return;
+  }
+  if (auto) {
+    const net = auto.totalPayout - auto.totalBet;
+    const sign = net >= 0 ? "+" : "-";
+    const jackpotText = auto.jackpots ? ` ${auto.jackpots} jackpot${auto.jackpots > 1 ? "s" : ""}.` : "";
+    const summary = `Auto x${SLOT_AUTO_SPINS}: mises ${fmt.format(auto.totalBet)}, gains ${fmt.format(auto.totalPayout)}, net ${sign}${fmt.format(Math.abs(net))}. Meilleur ${fmt.format(auto.bestPayout)}.${jackpotText}`;
+    log("slotsLog", summary);
+    announceGame("machine", summary, Math.max(0, net));
+  }
+  $("slots").classList.remove("game-running");
+  slotsBusy = false;
+  slotsAutoBusy = false;
+  setSlotsControlsDisabled(false);
+}
+
+function spinSlots(options = {}) {
+  if (slotsBusy) return;
+  const bet = Math.floor(stakes.slots);
+  if (!spend(bet)) {
+    if (options.auto) {
+      slotsAutoBusy = false;
+      setSlotsControlsDisabled(false);
+      const net = options.auto.totalPayout - options.auto.totalBet;
+      const sign = net >= 0 ? "+" : "-";
+      log("slotsLog", `Auto interrompu: fonds insuffisants. Net ${sign}${fmt.format(Math.abs(net))}.`);
+    } else {
+      log("slotsLog", "Mise impossible.");
+    }
+    return;
+  }
+  slotsBusy = true;
+  const auto = options.auto || null;
+  if (auto) slotsAutoBusy = true;
+  $("slots").classList.add("game-running");
+  $("slotReels").classList.add("spinning");
+  state.slots.spins += 1;
+  state.slots.jackpot += Math.max(1, Math.floor(bet * SLOT_JACKPOT_CONTRIBUTION));
+  render();
+  setSlotsControlsDisabled(true);
+  $("slotsWinLines").innerHTML = "";
+  $("slotReels").querySelectorAll(".slot-payline").forEach(line => line.remove());
+  highlightSlotPayouts();
+  const spinLabel = auto ? `Auto ${SLOT_AUTO_SPINS - auto.remaining + 1}/${SLOT_AUTO_SPINS}` : "Golden Grid";
+  log("slotsLog", `${spinLabel}: les 8 lignes tournent pour ${fmt.format(bet)} jetons...`);
+
+  const grid = Array.from({ length: 9 }, weightedSlotSymbol);
+  const previewTimer = previewSlotsSpin(grid);
+  window.setTimeout(() => settleSlotsSpin(grid, bet, previewTimer, auto), SLOT_SPIN_MS);
+}
+
+function autoSlots10() {
+  if (slotsBusy || slotsAutoBusy) return;
+  const bet = Math.floor(stakes.slots);
+  if (state.chips < bet) return log("slotsLog", "Mise impossible.");
+  spinSlots({ auto: { remaining: SLOT_AUTO_SPINS, totalBet: 0, totalPayout: 0, bestPayout: 0, jackpots: 0 } });
 }
 
 function renderAutomation() {
@@ -1353,6 +1671,18 @@ function bind() {
   document.querySelectorAll("[data-roulette-choice]").forEach(btn => btn.addEventListener("click", () => {
     setRouletteChoice(btn.dataset.rouletteChoice);
   }));
+  $("spinSlots").addEventListener("click", spinSlots);
+  $("autoSlots10").addEventListener("click", autoSlots10);
+  $("slotsWinLines").addEventListener("mouseover", e => {
+    const badge = e.target.closest("[data-line]");
+    if (!badge) return;
+    document.querySelectorAll(".slot-payline").forEach(line => {
+      line.classList.toggle("focus", line.dataset.line === badge.dataset.line);
+    });
+  });
+  $("slotsWinLines").addEventListener("mouseout", () => {
+    document.querySelectorAll(".slot-payline").forEach(line => line.classList.remove("focus"));
+  });
   $("ghostToggle").addEventListener("change", e => {
     state.automation.roulette.enabled = e.target.checked;
     if (e.target.checked && !state.automation.roulette.lastAt) {
