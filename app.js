@@ -51,7 +51,6 @@ const MAX_STAKE_TIER = 12;
 
 const state = load() || {
   chips: 0,
-  prestige: 1,
   heat: 0,
   name: `Joueur${Math.floor(Math.random() * 900 + 100)}`,
   upgrades: Object.fromEntries(upgrades.map(u => [u.id, 0])),
@@ -179,11 +178,11 @@ function spend(amount) {
 }
 
 function clickPower() {
-  return (1 + upgrades.reduce((sum, u) => sum + state.upgrades[u.id] * u.click, 0)) * state.prestige;
+  return 1 + upgrades.reduce((sum, u) => sum + state.upgrades[u.id] * u.click, 0);
 }
 
 function cps() {
-  return upgrades.reduce((sum, u) => sum + state.upgrades[u.id] * u.cps, 0) * state.prestige;
+  return upgrades.reduce((sum, u) => sum + state.upgrades[u.id] * u.cps, 0);
 }
 
 function ghostDealerLevel() {
@@ -213,7 +212,6 @@ function renderUpgrades() {
 function render(forceUpgrades = false) {
   $("chips").textContent = fmt.format(state.chips);
   $("income").textContent = `${fmt.format(cps())}/s`;
-  $("prestige").textContent = `x${state.prestige.toFixed(2)}`;
   $("clickValue").textContent = `+${fmt.format(clickPower())}`;
   $("rouletteStake").textContent = fmt.format(stakes.roulette);
   $("blackjackStake").textContent = fmt.format(stakes.blackjack);
@@ -362,6 +360,14 @@ function setSlotsControlsDisabled(disabled) {
     btn.disabled = disabled;
   });
   if (!disabled) renderStakeTierControls();
+}
+
+function applySharedSlotsState(slots, options = {}) {
+  if (!slots) return;
+  state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(slots.jackpot) || SLOT_JACKPOT_SEED));
+  state.slots.spins = Math.max(0, Math.floor(Number(slots.spins) || 0));
+  if (options.render) render();
+  else renderSlotsPanel();
 }
 
 function weightedSlotSymbol() {
@@ -659,11 +665,7 @@ async function spinSlots(options = {}) {
     return;
   }
   const grid = Array.from({ length: 9 }, (_, index) => slotSymbolById((sync.grid || [])[index]));
-  if (sync.slots) {
-    state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(sync.slots.jackpot) || SLOT_JACKPOT_SEED));
-    state.slots.spins = Math.max(0, Math.floor(Number(sync.slots.spins) || 0));
-    render();
-  }
+  applySharedSlotsState(sync.slots, { render: true });
   const previewTimer = previewSlotsSpin(grid);
   window.setTimeout(() => settleSlotsSpin(grid, bet, previewTimer, auto, sync.result || null), SLOT_SPIN_MS);
 }
@@ -1294,7 +1296,6 @@ function rememberSet(storageKey, set, value) {
 function rememberRaceSnapshot(raceId) {
   if (!raceId || raceSnapshots[raceId]) return;
   raceSnapshots[raceId] = {
-    prestige: state.prestige,
     heat: state.heat,
     upgrades: { ...state.upgrades },
     automation: JSON.parse(JSON.stringify(state.automation || {}))
@@ -1305,7 +1306,6 @@ function rememberRaceSnapshot(raceId) {
 function restoreRaceSnapshot(raceId) {
   const snapshot = raceSnapshots[raceId];
   if (!snapshot) return false;
-  state.prestige = Number(snapshot.prestige) || 1;
   state.heat = Number(snapshot.heat) || 0;
   state.upgrades = { ...snapshot.upgrades };
   state.automation = JSON.parse(JSON.stringify(snapshot.automation || {}));
@@ -1361,7 +1361,6 @@ function applyRaceStartReset(race, me) {
   rememberRaceSnapshot(race.id);
   state.stats.gambled += bet;
   state.chips = 0;
-  state.prestige = 1;
   state.heat = 0;
   state.upgrades = emptyUpgrades();
   state.automation.roulette.enabled = false;
@@ -1605,11 +1604,7 @@ async function pollTable() {
     renderLobby(data.lobby || data.players || []);
     renderChat(data.chat || []);
     renderEvents(data.events || []);
-    if (data.slots) {
-      state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(data.slots.jackpot) || SLOT_JACKPOT_SEED));
-      state.slots.spins = Math.max(0, Math.floor(Number(data.slots.spins) || 0));
-      renderSlotsPanel();
-    }
+    applySharedSlotsState(data.slots);
     renderPokerReady(data.pokerReady || [], data.pokerReadyDeadline || 0);
     renderPokerHand(data.pokerHand || null);
     renderRace(data.race || null);
@@ -1838,27 +1833,6 @@ function bind() {
     state.name = e.target.value.trim() || state.name;
     save();
     pollTable();
-  });
-  $("saveButton").addEventListener("click", () => {
-    save();
-    $("ticker").textContent = "Partie sauvegardee.";
-  });
-  $("resetButton").addEventListener("click", () => {
-    if (!confirm("Reinitialiser la partie solo ?")) return;
-    localStorage.removeItem("table-clicker-save");
-    location.reload();
-  });
-  $("prestigeButton").addEventListener("click", () => {
-    if (state.chips < 25000) return $("ticker").textContent = "Prestige disponible a 25 000 jetons.";
-    const bonus = 1 + Math.sqrt(state.chips / 25000) * .16;
-    state.chips = 0;
-    state.prestige += bonus - 1;
-    state.upgrades = Object.fromEntries(upgrades.map(u => [u.id, 0]));
-    state.automation.roulette.enabled = false;
-    state.automation.roulette.lastAt = 0;
-    $("ticker").textContent = `Prestige augmente: x${state.prestige.toFixed(2)}.`;
-    save();
-    render(true);
   });
 }
 
