@@ -2,7 +2,7 @@ from contextlib import closing
 import sqlite3
 import threading
 
-from server_models import SLOT_JACKPOT_SEED, normalize_slots
+from server_models import bounded_int, normalize_slots
 
 
 class SharedStateStore:
@@ -31,6 +31,20 @@ class SharedStateStore:
                     last_jackpot_amount INTEGER,
                     last_jackpot_at REAL
                 );
+
+                CREATE TABLE IF NOT EXISTS race_leaderboard (
+                    room_name TEXT NOT NULL,
+                    player_id TEXT NOT NULL,
+                    player_name TEXT NOT NULL,
+                    races INTEGER NOT NULL DEFAULT 0,
+                    wins INTEGER NOT NULL DEFAULT 0,
+                    best_score REAL NOT NULL DEFAULT 0,
+                    total_score REAL NOT NULL DEFAULT 0,
+                    best_payout INTEGER NOT NULL DEFAULT 0,
+                    total_payout INTEGER NOT NULL DEFAULT 0,
+                    last_race_at REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (room_name, player_id)
+                );
                 """
             )
             conn.commit()
@@ -58,6 +72,82 @@ class SharedStateStore:
             )
             conn.commit()
 
+    def record_race_result(self, room_name, result):
+        race_at = float(result.get("at", 0) or 0)
+        winner_id = result.get("winnerId")
+        payout = bounded_int(result.get("payout", 0), 0, 0)
+        rows = []
+        for player in result.get("players", []):
+            player_id = str(player.get("id", "") or "")
+            if not player_id:
+                continue
+            score = max(0.0, float(player.get("score", 0) or 0))
+            won = 1 if player_id == winner_id else 0
+            player_payout = payout if won else 0
+            rows.append((
+                room_name,
+                player_id,
+                str(player.get("name", "Joueur") or "Joueur")[:18],
+                1,
+                won,
+                score,
+                score,
+                player_payout,
+                player_payout,
+                race_at,
+            ))
+        if not rows:
+            return
+        with self._lock, closing(self.connect()) as conn:
+            conn.executemany(
+                """
+                INSERT INTO race_leaderboard (
+                    room_name, player_id, player_name, races, wins,
+                    best_score, total_score, best_payout, total_payout, last_race_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(room_name, player_id) DO UPDATE SET
+                    player_name = excluded.player_name,
+                    races = race_leaderboard.races + excluded.races,
+                    wins = race_leaderboard.wins + excluded.wins,
+                    best_score = MAX(race_leaderboard.best_score, excluded.best_score),
+                    total_score = race_leaderboard.total_score + excluded.total_score,
+                    best_payout = MAX(race_leaderboard.best_payout, excluded.best_payout),
+                    total_payout = race_leaderboard.total_payout + excluded.total_payout,
+                    last_race_at = MAX(race_leaderboard.last_race_at, excluded.last_race_at)
+                """,
+                rows,
+            )
+            conn.commit()
+
+    def load_race_leaderboard(self, room_name, limit=20):
+        with self._lock, closing(self.connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT player_id, player_name, races, wins, best_score, total_score,
+                       best_payout, total_payout, last_race_at
+                FROM race_leaderboard
+                WHERE room_name = ?
+                ORDER BY wins DESC, best_score DESC, total_score DESC, last_race_at DESC
+                LIMIT ?
+                """,
+                (room_name, max(1, int(limit or 20))),
+            ).fetchall()
+        return [
+            {
+                "id": row["player_id"],
+                "name": row["player_name"],
+                "races": max(0, int(row["races"] or 0)),
+                "wins": max(0, int(row["wins"] or 0)),
+                "bestScore": max(0, float(row["best_score"] or 0)),
+                "totalScore": max(0, float(row["total_score"] or 0)),
+                "bestPayout": max(0, int(row["best_payout"] or 0)),
+                "totalPayout": max(0, int(row["total_payout"] or 0)),
+                "lastRaceAt": float(row["last_race_at"] or 0),
+            }
+            for row in rows
+        ]
+
     def load_player_profiles(self):
         with self._lock, closing(self.connect()) as conn:
             rows = conn.execute(
@@ -81,7 +171,7 @@ class SharedStateStore:
         jackpot_amount = None
         jackpot_at = None
         if last_jackpot:
-            jackpot_amount = max(0, int(last_jackpot.get("amount", 0) or 0))
+            jackpot_amount = bounded_int(last_jackpot.get("amount", 0), 0, 0)
             jackpot_at = float(last_jackpot.get("at", 0) or 0)
         with self._lock, closing(self.connect()) as conn:
             conn.execute(

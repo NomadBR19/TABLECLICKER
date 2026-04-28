@@ -2,9 +2,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 import json
 import os
+import random
 import socket
 import threading
 import time
+import traceback
 
 from server_games import (
     deck,
@@ -12,7 +14,7 @@ from server_games import (
     format_cards,
     resolve_slot_spin,
 )
-from server_models import ROOM_NAME, new_room_state, normalize_slots, public_slots
+from server_models import ROOM_NAME, bounded_float, bounded_int, new_room_state, normalize_slots, public_slots
 from server_store import SharedStateStore
 
 ROOMS = {}
@@ -72,13 +74,13 @@ def load_persisted_state():
 
 def record_player_jackpot(player, amount):
     player["lastJackpot"] = {
-        "amount": max(0, int(amount or 0)),
+        "amount": bounded_int(amount, 0, 0),
         "at": time.time(),
     }
 
 
 def resolve_slots_spin(room, player_id, player_name, amount):
-    amount = max(0, int(amount or 0))
+    amount = bounded_int(amount, 0, 0)
     spin = resolve_slot_spin(normalize_slots(room.get("slots", {})), amount)
     room["slots"] = normalize_slots(spin["slots"])
     result = spin["result"]
@@ -409,7 +411,7 @@ def create_race(room, player_id, name, duration, amount=0, chips=0):
         return None, "Une course est deja ouverte."
     duration = max(60, min(3600, int(duration or 60)))
     duration = max(60, min(3600, round(duration / 60) * 60))
-    amount = max(0, int(amount or 0))
+    amount = bounded_int(amount, 0, 0)
     if amount > chips:
         return None, "Mise course impossible."
     race = {
@@ -473,7 +475,7 @@ def start_race(room, player_id):
         return None, "Il faut au moins 2 joueurs pour lancer la course."
     now = time.time()
     for pid, race_player in race.get("players", {}).items():
-        current_chips = max(0, int(room.get("players", {}).get(pid, {}).get("chips", race_player.get("bet", 0)) or 0))
+        current_chips = bounded_int(room.get("players", {}).get(pid, {}).get("chips", race_player.get("bet", 0)), 0, 0)
         if current_chips <= 0:
             return None, f"{race_player.get('name', 'Un joueur')} n'a pas de jetons a miser."
         race_player["bet"] = current_chips
@@ -494,7 +496,7 @@ def update_race_score(room, player_id, score):
     player = race.get("players", {}).get(player_id)
     if not player:
         return race, ""
-    player["score"] = max(player.get("score", 0), float(score or 0))
+    player["score"] = max(player.get("score", 0), bounded_float(score, 0, 0))
     player["seen"] = time.time()
     if time.time() >= race.get("ends_at", time.time()):
         finish_race(room)
@@ -518,7 +520,7 @@ def place_race_wager(room, player_id, name, target_id, amount, chips):
     now = time.time()
     if now > race_betting_deadline(race):
         return None, "Les paris sont fermes."
-    amount = max(0, int(amount or 0))
+    amount = bounded_int(amount, 0, 0)
     if amount <= 0 or amount > chips:
         return None, "Mise pari impossible."
     target = race.get("players", {}).get(target_id)
@@ -586,6 +588,7 @@ def finish_race(room):
     }
     room["last_race"] = result
     room["race"] = None
+    STORE.record_race_result(ROOM_NAME, result)
     add_event(room, f"{winner['name']} gagne la course avec {int(winner.get('score', 0))} points ({payout} jetons).", "race")
     if wager_pot and winning_wager_total > 0:
         add_event(room, f"Paris course: {wager_pot} jetons repartis sur les bons pronostics.", "race")
@@ -676,7 +679,7 @@ class Handler(SimpleHTTPRequestHandler):
         client_ip = self.client_address[0]
         player_id = safe_text(query.get("playerId", ["anonymous"])[0], "anonymous", 80)
         player_name = safe_text(query.get("name", ["Joueur"])[0], "Joueur", 18)
-        chips = int(float(query.get("chips", ["0"])[0] or 0))
+        chips = bounded_int(query.get("chips", ["0"])[0], 0, 0)
         touch_player(player_id, player_name, chips, client_ip, ROOM_NAME)
 
         if parsed.path == "/api/lobby":
@@ -717,6 +720,10 @@ class Handler(SimpleHTTPRequestHandler):
             "lastGame": room.get("last_game"),
             "pokerHand": public_poker_hand(room, player_id),
             "race": public_race(room, player_id),
+            "raceLeaderboard": [
+                {**entry, "self": entry["id"] == player_id}
+                for entry in STORE.load_race_leaderboard(ROOM_NAME)
+            ],
             "slots": public_slots(room),
             "lastRace": room.get("last_race"),
             "pokerReady": [
@@ -744,7 +751,7 @@ class Handler(SimpleHTTPRequestHandler):
         room_name = ROOM_NAME
         player_id = safe_text(payload.get("playerId", "anonymous"), "anonymous", 80)
         name = safe_text(payload.get("name", "Joueur"), "Joueur", 18)
-        chips = int(float(payload.get("chips", 0) or 0))
+        chips = bounded_int(payload.get("chips", 0), 0, 0)
         action = payload.get("action", {})
         action_type = action.get("type")
 
@@ -756,7 +763,7 @@ class Handler(SimpleHTTPRequestHandler):
         )
         player.update({"name": name, "chips": chips, "seen": time.time(), "lastJackpot": player.get("lastJackpot") or PLAYERS.get(player_id, {}).get("lastJackpot")})
 
-        amount = max(0, int(float(action.get("amount", 0) or 0)))
+        amount = bounded_int(action.get("amount", 0), 0, 0)
         if action_type == "join":
             add_event(room, f"{name} rejoint la table.", "join")
         elif action_type == "chat":
@@ -766,7 +773,7 @@ class Handler(SimpleHTTPRequestHandler):
         elif action_type == "game":
             game = safe_text(action.get("game", "jeu"), "jeu", 18)
             result = safe_text(action.get("result", ""), "", 120)
-            win_amount = max(0, int(float(action.get("amount", 0) or 0)))
+            win_amount = bounded_int(action.get("amount", 0), 0, 0)
             if result:
                 add_event(room, f"{name} joue {game}: {result}", game)
                 add_big_win(room, name, game, win_amount)
@@ -811,34 +818,59 @@ class Handler(SimpleHTTPRequestHandler):
             clean()
             return self.send_json({"ok": True, "pokerHand": public_poker_hand(room, player_id)})
         elif action_type == "race_create":
-            race, error = create_race(room, player_id, name, int(float(action.get("duration", 60) or 60)), amount, chips)
+            try:
+                duration = bounded_int(action.get("duration", 60), 60, 60, 3600)
+                race, error = create_race(room, player_id, name, duration, amount, chips)
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send_json({"ok": False, "error": f"Course indisponible: {exc}"}, 500)
             if error:
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id)})
         elif action_type == "race_join":
-            race, error = join_race(room, player_id, name, amount, chips)
+            try:
+                race, error = join_race(room, player_id, name, amount, chips)
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send_json({"ok": False, "error": f"Course indisponible: {exc}"}, 500)
             if error:
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id)})
         elif action_type == "race_start":
-            race, error = start_race(room, player_id)
+            try:
+                race, error = start_race(room, player_id)
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send_json({"ok": False, "error": f"Course indisponible: {exc}"}, 500)
             if error:
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id)})
         elif action_type == "race_score":
-            race, error = update_race_score(room, player_id, float(action.get("score", 0) or 0))
+            try:
+                race, error = update_race_score(room, player_id, bounded_float(action.get("score", 0), 0, 0))
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send_json({"ok": False, "error": f"Course indisponible: {exc}"}, 500)
             if error:
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id), "lastRace": room.get("last_race")})
         elif action_type == "race_wager":
             target_id = safe_text(action.get("targetId", ""), "", 100)
-            race, error = place_race_wager(room, player_id, name, target_id, amount, chips)
+            try:
+                race, error = place_race_wager(room, player_id, name, target_id, amount, chips)
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send_json({"ok": False, "error": f"Course indisponible: {exc}"}, 500)
             if error:
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id)})
         elif action_type == "slots_spin":
-            with STATE_LOCK:
-                result = resolve_slots_spin(room, player_id, name, amount)
+            try:
+                with STATE_LOCK:
+                    result = resolve_slots_spin(room, player_id, name, amount)
+            except Exception as exc:
+                traceback.print_exc()
+                return self.send_json({"ok": False, "error": f"Machine indisponible: {exc}"}, 500)
             return self.send_json({"ok": True, **result})
 
         clean()

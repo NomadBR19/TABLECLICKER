@@ -303,6 +303,7 @@
       <nav class="network-tabs" aria-label="Onglets reseau">
         <button class="active" data-network-tab="chat">Chat<span id="chatUnreadBadge" class="chat-unread-badge" hidden>0</span></button>
         <button data-network-tab="players">Joueurs</button>
+        <button data-network-tab="leaderboard">Classement</button>
         <button data-network-tab="journal">Journal</button>
       </nav>
 
@@ -316,6 +317,10 @@
 
       <div id="networkPlayersPanel" class="network-panel">
         <div id="onlinePlayers" class="players lobby-list"></div>
+      </div>
+
+      <div id="networkLeaderboardPanel" class="network-panel">
+        <div id="raceLeaderboard" class="leaderboard-list"></div>
       </div>
 
       <div id="networkJournalPanel" class="network-panel">

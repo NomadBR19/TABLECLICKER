@@ -1844,7 +1844,7 @@ label {
 
 .network-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   min-width: 0;
   align-items: stretch;
@@ -1908,12 +1908,14 @@ label {
 }
 
 #networkPlayersPanel,
+#networkLeaderboardPanel,
 #networkJournalPanel {
   grid-template-rows: minmax(0, 1fr);
 }
 
 .network-rail .chat-messages,
-.network-rail .events-list {
+.network-rail .events-list,
+.network-rail .leaderboard-list {
   max-height: none;
   min-height: 0;
   min-width: 0;
@@ -1941,6 +1943,66 @@ label {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.leaderboard-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) minmax(64px, auto);
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(255, 235, 165, .16);
+  border-radius: 7px;
+  padding: 8px 9px;
+  background:
+    linear-gradient(90deg, rgba(255, 211, 90, .08), rgba(84, 184, 255, .045)),
+    rgba(255, 255, 255, .045);
+  animation: messagePop .25s cubic-bezier(.12, .82, .22, 1) both;
+}
+
+.leaderboard-row.self {
+  border-color: rgba(69, 214, 134, .44);
+  background:
+    linear-gradient(90deg, rgba(69, 214, 134, .11), rgba(255, 211, 90, .055)),
+    rgba(255, 255, 255, .045);
+  box-shadow: 0 0 18px rgba(69, 214, 134, .09);
+}
+
+.leaderboard-rank {
+  color: var(--gold);
+  font-size: .82rem;
+  text-align: center;
+}
+
+.leaderboard-row div,
+.leaderboard-row > strong:last-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.leaderboard-row span {
+  color: #fff3b9;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.leaderboard-row small {
+  color: var(--muted);
+  font-size: .68rem;
+  font-weight: 800;
+}
+
+.leaderboard-row > strong:last-child {
+  color: var(--gold);
+  justify-items: end;
+  text-align: right;
+  font-size: .78rem;
 }
 
 .player-detail {

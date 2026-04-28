@@ -48,6 +48,7 @@ const MIN_GHOST_ROULETTE_BET = 100;
 const ROULETTE_SPIN_MS = 4900;
 const STAKE_BASE_STEPS = [25, 50, 100, 1000];
 const MAX_STAKE_TIER = 12;
+const MAX_SAFE_CHIPS = Number.MAX_SAFE_INTEGER;
 
 const state = load() || {
   chips: 0,
@@ -93,6 +94,7 @@ let lastLobbyKey = "";
 let lastPokerReadyKey = "";
 let lastPokerHandKey = "";
 let lastRaceKey = "";
+let lastRaceLeaderboardKey = "";
 let lastChatKey = "";
 let lastEventsKey = "";
 let seenBigWinEvents = new Set();
@@ -122,6 +124,12 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function safeWholeNumber(value, fallback = 0, max = MAX_SAFE_CHIPS) {
+  const number = Math.floor(Number(value));
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(0, Math.min(max, number));
+}
+
 function save() {
   localStorage.setItem("table-clicker-save", JSON.stringify(state));
 }
@@ -131,11 +139,15 @@ function load() {
 }
 
 function normalizeState() {
+  state.chips = safeWholeNumber(state.chips);
+  state.heat = Math.max(0, Math.min(100, Number(state.heat) || 0));
   state.upgrades = state.upgrades || {};
   upgrades.forEach(u => {
     if (!Number.isFinite(state.upgrades[u.id])) state.upgrades[u.id] = 0;
   });
   state.stats = state.stats || { gambled: 0, won: 0 };
+  state.stats.gambled = safeWholeNumber(state.stats.gambled);
+  state.stats.won = safeWholeNumber(state.stats.won);
   state.slots = state.slots || {};
   state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(state.slots.jackpot) || SLOT_JACKPOT_SEED));
   state.slots.spins = Math.max(0, Math.floor(Number(state.slots.spins) || 0));
@@ -160,7 +172,7 @@ function getPlayerId() {
 }
 
 function gain(amount) {
-  state.chips += Math.max(0, amount);
+  state.chips = safeWholeNumber(state.chips + Math.max(0, Number(amount) || 0));
 }
 
 function addRaceScore(amount) {
@@ -259,12 +271,12 @@ function renderCards(el, hand, hideFirst = false) {
 function settleBet(bet, payout, label, origin = null) {
   if (payout > 0) {
     gain(payout);
-    state.stats.won += payout;
+    state.stats.won = safeWholeNumber(state.stats.won + payout);
     spawnFloatText(origin, `+${fmt.format(payout)}`, "win");
     if (payout >= 1000000) grandCelebrate(origin, "jackpot");
     else celebrate(origin, payout >= bet * 4 ? "mega" : "win");
   }
-  state.stats.gambled += bet;
+  state.stats.gambled = safeWholeNumber(state.stats.gambled + bet);
   $("ticker").textContent = label;
   save();
   render();
@@ -760,12 +772,12 @@ function paintRouletteWheel() {
 }
 
 function updateStake(game, delta) {
-  stakes[game] = Math.max(0, Math.floor(stakes[game] + delta));
+  stakes[game] = safeWholeNumber(stakes[game] + delta);
   render();
 }
 
 function setStake(game, amount) {
-  stakes[game] = Math.max(0, Math.floor(amount));
+  stakes[game] = safeWholeNumber(amount);
   render();
 }
 
@@ -1221,7 +1233,7 @@ function renderPokerHand(hand) {
 
   if (me && me.bet > 0 && !paidPokerHands.has(hand.at)) {
     if (spend(me.bet)) {
-      state.stats.gambled += me.bet;
+      state.stats.gambled = safeWholeNumber(state.stats.gambled + me.bet);
       rememberPaidPokerHand(hand.at);
       $("ticker").textContent = "Ta mise poker est posee sur la table.";
       save();
@@ -1276,7 +1288,7 @@ function applyPokerGame(game) {
   log("pokerLog", `${winnerText}. ${detail} Pot ${fmt.format(game.payout)}.`);
   if (game.winnerId === playerId) {
     gain(game.payout);
-    state.stats.won += game.payout;
+    state.stats.won = safeWholeNumber(state.stats.won + game.payout);
     if (game.payout >= 1000000) grandCelebrate($("poker"), "jackpot");
     else celebrate($("poker"), "mega");
     save();
@@ -1359,7 +1371,7 @@ function applyRaceStartReset(race, me) {
   if (!race || !me || me.id !== playerId || me.self !== true || me.participant !== true || paidRaceIds.has(race.id)) return;
   const bet = Math.max(0, Math.floor(Number(me.bet || 0)));
   rememberRaceSnapshot(race.id);
-  state.stats.gambled += bet;
+  state.stats.gambled = safeWholeNumber(state.stats.gambled + bet);
   state.chips = 0;
   state.heat = 0;
   state.upgrades = emptyUpgrades();
@@ -1483,13 +1495,13 @@ function applyRaceResult(result) {
   }
   if (result.winnerId === playerId) {
     gain(result.payout);
-    state.stats.won += result.payout;
+    state.stats.won = safeWholeNumber(state.stats.won + result.payout);
     $("raceLog").textContent = `Tu gagnes la course. Pot ${fmt.format(result.payout)}.`;
     showTableAnnouncement(`${state.name} gagne la course: ${fmt.format(result.payout)} jetons`, `race-win-${result.id}`);
     grandCelebrate($("race"), "race");
   } else if (myWager && myWager.payout > 0) {
     gain(myWager.payout);
-    state.stats.won += myWager.payout;
+    state.stats.won = safeWholeNumber(state.stats.won + myWager.payout);
     $("raceLog").textContent = `Pari gagne sur ${result.winnerName}. Gain ${fmt.format(myWager.payout)}.`;
     celebrate($("race"), myWager.payout >= 1000000 ? "mega" : "win");
   } else if (myWager) {
@@ -1512,7 +1524,7 @@ async function placeRaceWager() {
   const res = await sendTableAction({ type: "race_wager", targetId, amount }, true);
   if (!res.ok) return log("raceLog", res.error || "Pari impossible.");
   if (spend(amount)) {
-    state.stats.gambled += amount;
+    state.stats.gambled = safeWholeNumber(state.stats.gambled + amount);
     $("ticker").textContent = "Pari course enregistre.";
     save();
   }
@@ -1569,11 +1581,12 @@ function log(id, text) {
 
 async function sendTableAction(action, expectJson = false) {
   room = SHARED_ROOM;
+  const chips = safeWholeNumber(state.chips);
   try {
     const res = await fetch("/api/action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ room, playerId, name: state.name, chips: Math.floor(state.chips), action })
+      body: JSON.stringify({ room, playerId, name: state.name, chips, action })
     });
     const data = await res.json();
     if (!res.ok || data.ok === false) return { ok: false, error: data.error || "Action refusee." };
@@ -1585,8 +1598,9 @@ async function sendTableAction(action, expectJson = false) {
 }
 
 async function pollLobby() {
+  const chips = safeWholeNumber(state.chips);
   try {
-    const res = await fetch(`/api/lobby?room=${encodeURIComponent(SHARED_ROOM)}&playerId=${encodeURIComponent(playerId)}&name=${encodeURIComponent(state.name)}&chips=${Math.floor(state.chips)}`);
+    const res = await fetch(`/api/lobby?room=${encodeURIComponent(SHARED_ROOM)}&playerId=${encodeURIComponent(playerId)}&name=${encodeURIComponent(state.name)}&chips=${chips}`);
     const data = await res.json();
     renderLobby(data.players || []);
   } catch {
@@ -1596,14 +1610,16 @@ async function pollLobby() {
 
 async function pollTable() {
   room = SHARED_ROOM;
+  const chips = safeWholeNumber(state.chips);
   try {
-    const res = await fetch(`/api/state?room=${encodeURIComponent(SHARED_ROOM)}&playerId=${encodeURIComponent(playerId)}&name=${encodeURIComponent(state.name)}&chips=${Math.floor(state.chips)}`);
+    const res = await fetch(`/api/state?room=${encodeURIComponent(SHARED_ROOM)}&playerId=${encodeURIComponent(playerId)}&name=${encodeURIComponent(state.name)}&chips=${chips}`);
     const data = await res.json();
     $("tableStatus").textContent = "Reseau";
     renderRoomPlayers(data.players || []);
     renderLobby(data.lobby || data.players || []);
     renderChat(data.chat || []);
     renderEvents(data.events || []);
+    renderRaceLeaderboard(data.raceLeaderboard || []);
     applySharedSlotsState(data.slots);
     renderPokerReady(data.pokerReady || [], data.pokerReadyDeadline || 0);
     renderPokerHand(data.pokerHand || null);
@@ -1641,6 +1657,36 @@ function renderLobby(players) {
   `).join("") || `<div class="empty-row">Aucun joueur en ligne.</div>`);
 }
 
+function renderRaceLeaderboard(entries) {
+  const key = entries.map(entry => [
+    entry.id,
+    entry.name,
+    entry.races,
+    entry.wins,
+    Math.floor(Number(entry.bestScore || 0)),
+    entry.bestPayout || 0,
+    entry.self
+  ].join(":")).join("|");
+  if (key === lastRaceLeaderboardKey) return;
+  lastRaceLeaderboardKey = key;
+  setHtmlIfChanged("raceLeaderboard", entries.map((entry, index) => {
+    const races = Math.max(0, Math.floor(Number(entry.races || 0)));
+    const wins = Math.max(0, Math.floor(Number(entry.wins || 0)));
+    const bestScore = Math.max(0, Math.floor(Number(entry.bestScore || 0)));
+    const bestPayout = Math.max(0, Math.floor(Number(entry.bestPayout || 0)));
+    return `
+    <div class="leaderboard-row${entry.self ? " self" : ""}">
+      <strong class="leaderboard-rank">#${index + 1}</strong>
+      <div>
+        <span>${escapeHtml(entry.name)}${entry.self ? " (toi)" : ""}</span>
+        <small>${fmt.format(races)} course${races > 1 ? "s" : ""} - record ${fmt.format(bestScore)}</small>
+      </div>
+      <strong>${fmt.format(wins)} victoire${wins > 1 ? "s" : ""}${bestPayout ? `<small>Top pot ${fmt.format(bestPayout)}</small>` : ""}</strong>
+    </div>
+    `;
+  }).join("") || `<div class="empty-row">Aucune course terminee pour le moment.</div>`);
+}
+
 function setNetworkTab(tab) {
   activeNetworkTab = tab;
   document.querySelectorAll("[data-network-tab]").forEach(btn => {
@@ -1648,6 +1694,7 @@ function setNetworkTab(tab) {
   });
   $("networkChatPanel").classList.toggle("active", tab === "chat");
   $("networkPlayersPanel").classList.toggle("active", tab === "players");
+  $("networkLeaderboardPanel").classList.toggle("active", tab === "leaderboard");
   $("networkJournalPanel").classList.toggle("active", tab === "journal");
   if (tab === "chat") {
     unreadChatCount = 0;
