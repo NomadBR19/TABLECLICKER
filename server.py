@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, urlparse
 import json
 import os
 import random
+import re
 import socket
 import threading
 import time
@@ -25,14 +26,65 @@ POKER_TURN_TIMEOUT = 75
 POKER_READY_DELAY = 5
 MAX_EVENTS = 70
 BIG_WIN_THRESHOLD = 100000
+MAX_JSON_BODY = 4096
+PLAYER_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]")
+ALLOWED_ACTIONS = {
+    "join",
+    "chat",
+    "game",
+    "poker_ready",
+    "poker_action",
+    "poker",
+    "race_create",
+    "race_join",
+    "race_start",
+    "race_score",
+    "race_wager",
+    "slots_spin",
+}
+ALLOWED_EVENT_KINDS = {
+    "event",
+    "join",
+    "chat",
+    "game",
+    "roulette",
+    "blackjack",
+    "machine",
+    "slots",
+    "poker",
+    "race",
+    "course",
+    "announce",
+    "bigwin",
+    "jackpot",
+}
+ALLOWED_GAME_KINDS = {"roulette", "blackjack", "machine", "poker", "course"}
 STATE_LOCK = threading.Lock()
 STORE = SharedStateStore(os.path.join(os.path.dirname(__file__), "shared_state.sqlite3"))
 STORE.initialize()
 
 
 def safe_text(value, fallback, limit):
-    text = str(value or fallback).strip()[:limit]
+    text = str(value if value is not None else fallback)
+    text = "".join(char if char.isprintable() else " " for char in text)
+    text = " ".join(text.strip().split())[:limit]
     return text or fallback
+
+
+def safe_player_id(value):
+    text = safe_text(value, "anonymous", 80)
+    text = PLAYER_ID_RE.sub("-", text)[:80].strip(".:-_")
+    return text or "anonymous"
+
+
+def safe_event_kind(value, fallback="event"):
+    kind = safe_text(value, fallback, 18).lower()
+    return kind if kind in ALLOWED_EVENT_KINDS else fallback
+
+
+def safe_game_kind(value):
+    game = safe_text(value, "game", 18).lower()
+    return game if game in ALLOWED_GAME_KINDS else "game"
 
 
 def host_name(ip):
@@ -203,14 +255,18 @@ def public_players(current_id=""):
 
 
 def add_event(room, text, kind="event"):
-    room["events"].append({"at": time.time(), "text": text, "kind": kind})
+    room["events"].append({
+        "at": time.time(),
+        "text": safe_text(text, "", 220),
+        "kind": safe_event_kind(kind),
+    })
     room["events"] = room["events"][-MAX_EVENTS:]
 
 
 def add_big_win(room, name, game, amount):
     if amount < BIG_WIN_THRESHOLD:
         return
-    label = safe_text(game, "jeu", 18)
+    label = safe_game_kind(game)
     add_event(room, f"{name} gagne {amount} jetons sur {label}.", "bigwin")
 
 
@@ -221,8 +277,8 @@ def add_announcement(room, text):
 def add_chat(room, player_id, name, text):
     room["chat"].append({
         "at": time.time(),
-        "playerId": player_id,
-        "name": name,
+        "playerId": safe_player_id(player_id),
+        "name": safe_text(name, "Joueur", 18),
         "text": safe_text(text, "", 180),
     })
     room["chat"] = room["chat"][-MAX_EVENTS:]
@@ -652,6 +708,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
         super().end_headers()
 
     def send_json(self, payload, status=200):
@@ -663,11 +721,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_json(self):
-        length = int(self.headers.get("Content-Length", "0") or 0)
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        except json.JSONDecodeError:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
             return None
+        if length <= 0 or length > MAX_JSON_BODY:
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -677,7 +741,7 @@ class Handler(SimpleHTTPRequestHandler):
         query = parse_qs(parsed.query)
         room_name = ROOM_NAME
         client_ip = self.client_address[0]
-        player_id = safe_text(query.get("playerId", ["anonymous"])[0], "anonymous", 80)
+        player_id = safe_player_id(query.get("playerId", ["anonymous"])[0])
         player_name = safe_text(query.get("name", ["Joueur"])[0], "Joueur", 18)
         chips = bounded_int(query.get("chips", ["0"])[0], 0, 0)
         touch_player(player_id, player_name, chips, client_ip, ROOM_NAME)
@@ -749,11 +813,15 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "bad json"}, 400)
 
         room_name = ROOM_NAME
-        player_id = safe_text(payload.get("playerId", "anonymous"), "anonymous", 80)
+        player_id = safe_player_id(payload.get("playerId", "anonymous"))
         name = safe_text(payload.get("name", "Joueur"), "Joueur", 18)
         chips = bounded_int(payload.get("chips", 0), 0, 0)
         action = payload.get("action", {})
+        if not isinstance(action, dict):
+            return self.send_json({"ok": False, "error": "Action invalide."}, 400)
         action_type = action.get("type")
+        if action_type not in ALLOWED_ACTIONS:
+            return self.send_json({"ok": False, "error": "Action inconnue."}, 400)
 
         touch_player(player_id, name, chips, self.client_address[0], ROOM_NAME)
         room = room_state()
@@ -771,7 +839,7 @@ class Handler(SimpleHTTPRequestHandler):
             if text:
                 add_chat(room, player_id, name, text)
         elif action_type == "game":
-            game = safe_text(action.get("game", "jeu"), "jeu", 18)
+            game = safe_game_kind(action.get("game", "game"))
             result = safe_text(action.get("result", ""), "", 120)
             win_amount = bounded_int(action.get("amount", 0), 0, 0)
             if result:
@@ -855,7 +923,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id), "lastRace": room.get("last_race")})
         elif action_type == "race_wager":
-            target_id = safe_text(action.get("targetId", ""), "", 100)
+            target_id = safe_player_id(action.get("targetId", ""))
             try:
                 race, error = place_race_wager(room, player_id, name, target_id, amount, chips)
             except Exception as exc:
@@ -865,6 +933,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"ok": False, "error": error}, 409)
             return self.send_json({"ok": True, "race": public_race(room, player_id)})
         elif action_type == "slots_spin":
+            if amount <= 0 or amount > chips:
+                return self.send_json({"ok": False, "error": "Mise machine impossible."}, 409)
             try:
                 with STATE_LOCK:
                     result = resolve_slots_spin(room, player_id, name, amount)

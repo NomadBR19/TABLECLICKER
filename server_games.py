@@ -83,7 +83,7 @@ def score_slots(grid, bet, jackpot_value):
 
     scatter_payout = bet * SLOT_SCATTER_MULT if counts.get("gem", 0) >= 3 else 0
     jackpot_win = next((win for win in wins if win["symbolId"] == "gem"), None)
-    jackpot_payout = jackpot_value if jackpot_win else 0
+    jackpot_payout = max(0, int(jackpot_value or 0)) if jackpot_win else 0
     line_total = sum(win["payout"] for win in wins)
     cross_bonus = int(line_total * (len(wins) - 1) * SLOT_CROSS_BONUS_RATE) if len(wins) > 1 else 0
     payout = line_total + scatter_payout + cross_bonus + jackpot_payout

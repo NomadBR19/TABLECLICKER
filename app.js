@@ -49,6 +49,8 @@ const ROULETTE_SPIN_MS = 4900;
 const STAKE_BASE_STEPS = [25, 50, 100, 1000];
 const MAX_STAKE_TIER = 12;
 const MAX_SAFE_CHIPS = Number.MAX_SAFE_INTEGER;
+const UI_RENDER_INTERVAL_MS = 250;
+const HIDDEN_UI_RENDER_INTERVAL_MS = 1000;
 
 const state = load() || {
   chips: 0,
@@ -75,6 +77,10 @@ let slotsBusy = false;
 let slotsAutoBusy = false;
 let slotsHistory = [];
 let lastDisplayedSlotsJackpot = SLOT_JACKPOT_SEED;
+let lastRenderedSlotsJackpot = null;
+let lastRenderedSlotsLevel = "";
+let lastRenderedSlotsTier = "";
+let lastRenderedStakeTier = null;
 let pokerBusy = false;
 let lastPokerGameAt = Number(localStorage.getItem("table-clicker-last-poker") || 0);
 let paidPokerHands = new Set(JSON.parse(localStorage.getItem("table-clicker-paid-poker-hands") || "[]"));
@@ -105,10 +111,24 @@ let activeNetworkTab = "chat";
 let lastAutomationWarning = "";
 let activeCelebrationFrame = 0;
 let activeCelebrationCanvas = null;
+let lastUiRenderAt = 0;
+let lastRaceSyncCheckAt = 0;
+let pollTableInFlight = false;
 const emojiSpriteCache = new Map();
 const prefersReducedMotion = globalThis.matchMedia ? globalThis.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
 const $ = id => document.getElementById(id);
+
+function setText(id, text) {
+  const el = $(id);
+  const value = String(text);
+  if (el && el.textContent !== value) el.textContent = value;
+}
+
+function setWidth(id, value) {
+  const el = $(id);
+  if (el && el.style.width !== value) el.style.width = value;
+}
 
 function emptyUpgrades() {
   return Object.fromEntries(upgrades.map(u => [u.id, 0]));
@@ -130,6 +150,10 @@ function safeWholeNumber(value, fallback = 0, max = MAX_SAFE_CHIPS) {
   return Math.max(0, Math.min(max, number));
 }
 
+function safeJackpot(value, fallback = SLOT_JACKPOT_SEED) {
+  return Math.max(SLOT_JACKPOT_SEED, safeWholeNumber(value, fallback));
+}
+
 function save() {
   localStorage.setItem("table-clicker-save", JSON.stringify(state));
 }
@@ -149,7 +173,7 @@ function normalizeState() {
   state.stats.gambled = safeWholeNumber(state.stats.gambled);
   state.stats.won = safeWholeNumber(state.stats.won);
   state.slots = state.slots || {};
-  state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(state.slots.jackpot) || SLOT_JACKPOT_SEED));
+  state.slots.jackpot = safeJackpot(state.slots.jackpot);
   state.slots.spins = Math.max(0, Math.floor(Number(state.slots.spins) || 0));
   state.automation = state.automation || {};
   state.automation.roulette = {
@@ -222,19 +246,19 @@ function renderUpgrades() {
 }
 
 function render(forceUpgrades = false) {
-  $("chips").textContent = fmt.format(state.chips);
-  $("income").textContent = `${fmt.format(cps())}/s`;
-  $("clickValue").textContent = `+${fmt.format(clickPower())}`;
-  $("rouletteStake").textContent = fmt.format(stakes.roulette);
-  $("blackjackStake").textContent = fmt.format(stakes.blackjack);
-  $("pokerStake").textContent = fmt.format(stakes.poker);
-  $("slotsStake").textContent = fmt.format(stakes.slots);
+  setText("chips", fmt.format(state.chips));
+  setText("income", `${fmt.format(cps())}/s`);
+  setText("clickValue", `+${fmt.format(clickPower())}`);
+  setText("rouletteStake", fmt.format(stakes.roulette));
+  setText("blackjackStake", fmt.format(stakes.blackjack));
+  setText("pokerStake", fmt.format(stakes.poker));
+  setText("slotsStake", fmt.format(stakes.slots));
   renderStakeTierControls();
   renderSlotsPanel();
-  $("raceScore").textContent = fmt.format(raceScore);
+  setText("raceScore", fmt.format(raceScore));
   updatePokerAvailability();
   updateRaceControls();
-  $("heatFill").style.width = `${Math.min(100, state.heat)}%`;
+  setWidth("heatFill", `${Math.min(100, state.heat).toFixed(1)}%`);
   renderAutomation();
   if (document.activeElement !== $("playerName")) $("playerName").value = state.name;
   if (forceUpgrades) renderUpgrades();
@@ -337,12 +361,21 @@ function playRoulette(options = {}) {
 function renderSlotsPanel() {
   const payouts = $("slotsPayouts");
   const level = state.slots.spins >= 200 ? "or" : state.slots.spins >= 50 ? "argent" : "bronze";
-  $("slots").dataset.slotLevel = level;
+  if (level !== lastRenderedSlotsLevel) {
+    $("slots").dataset.slotLevel = level;
+    lastRenderedSlotsLevel = level;
+  }
   const jackpotEl = $("slotsJackpot");
   const jackpotBox = jackpotEl ? jackpotEl.closest(".slot-jackpot") : null;
   const jackpotTier = state.slots.jackpot >= 10000 ? "meteor" : state.slots.jackpot >= 2500 ? "crown" : state.slots.jackpot >= 750 ? "surge" : "base";
-  $("slots").dataset.jackpotTier = jackpotTier;
-  if (jackpotEl) jackpotEl.textContent = fmt.format(state.slots.jackpot);
+  if (jackpotTier !== lastRenderedSlotsTier) {
+    $("slots").dataset.jackpotTier = jackpotTier;
+    lastRenderedSlotsTier = jackpotTier;
+  }
+  if (jackpotEl && state.slots.jackpot !== lastRenderedSlotsJackpot) {
+    jackpotEl.textContent = fmt.format(state.slots.jackpot);
+    lastRenderedSlotsJackpot = state.slots.jackpot;
+  }
   if (jackpotBox) {
     const jackpotChanged = state.slots.jackpot !== lastDisplayedSlotsJackpot;
     if (jackpotChanged) {
@@ -352,8 +385,8 @@ function renderSlotsPanel() {
     }
   }
   lastDisplayedSlotsJackpot = state.slots.jackpot;
+  setText("slotsStatus", `${SLOT_LINES.length} lignes actives - ${level}`);
   if (!payouts || payouts.dataset.ready === "true") {
-    $("slotsStatus").textContent = `${SLOT_LINES.length} lignes actives - ${level}`;
     return;
   }
   payouts.dataset.ready = "true";
@@ -362,7 +395,6 @@ function renderSlotsPanel() {
   payouts.innerHTML = SLOT_SYMBOLS.filter(symbol => !symbol.wild).slice().reverse().map(symbol => `
     <span data-symbol="${escapeHtml(symbol.id)}"><b>${escapeHtml(symbol.icon)}${escapeHtml(symbol.icon)}${escapeHtml(symbol.icon)}</b> x${symbol.mult}</span>
   `).join("") + `<span data-symbol="${escapeHtml(wild.id)}"><b>${escapeHtml(wild.icon.repeat(3))}</b> x${wild.mult}</span><span data-symbol="scatter-gem"><b>3${escapeHtml(gem.icon)}</b> bonus x${SLOT_SCATTER_MULT}</span>`;
-  $("slotsStatus").textContent = `${SLOT_LINES.length} lignes actives - ${level}`;
 }
 
 function setSlotsControlsDisabled(disabled) {
@@ -376,8 +408,12 @@ function setSlotsControlsDisabled(disabled) {
 
 function applySharedSlotsState(slots, options = {}) {
   if (!slots) return;
-  state.slots.jackpot = Math.max(SLOT_JACKPOT_SEED, Math.floor(Number(slots.jackpot) || SLOT_JACKPOT_SEED));
-  state.slots.spins = Math.max(0, Math.floor(Number(slots.spins) || 0));
+  const nextJackpot = safeJackpot(slots.jackpot);
+  const nextSpins = Math.max(0, Math.floor(Number(slots.spins) || 0));
+  const changed = nextJackpot !== state.slots.jackpot || nextSpins !== state.slots.spins;
+  state.slots.jackpot = nextJackpot;
+  state.slots.spins = nextSpins;
+  if (!changed) return;
   if (options.render) render();
   else renderSlotsPanel();
 }
@@ -457,7 +493,7 @@ function scoreSlots(grid, bet, jackpotValue = state.slots.jackpot) {
     scatterPayout = bet * SLOT_SCATTER_MULT;
   }
   const jackpotWin = wins.find(win => win.symbolId === "gem");
-  const jackpotPayout = jackpotWin ? Math.max(0, Math.floor(Number(jackpotValue) || 0)) : 0;
+  const jackpotPayout = jackpotWin ? safeJackpot(jackpotValue) : 0;
 
   const lineTotal = wins.reduce((sum, win) => sum + win.payout, 0);
   const crossBonus = wins.length > 1 ? Math.floor(lineTotal * (wins.length - 1) * SLOT_CROSS_BONUS_RATE) : 0;
@@ -705,9 +741,9 @@ function renderAutomation() {
     ? `Actif - prochain lancer dans ${Math.ceil(remaining / 1000)}s`
     : `Pret - delai ${Math.round(cooldown / 1000)}s`;
 
-  $("ghostLevel").textContent = `Niv. ${level}`;
-  $("ghostStatus").textContent = status;
-  $("ghostCooldown").style.width = `${cfg.enabled ? Math.min(100, elapsed / cooldown * 100) : 0}%`;
+  setText("ghostLevel", `Niv. ${level}`);
+  setText("ghostStatus", status);
+  setWidth("ghostCooldown", `${cfg.enabled ? Math.min(100, elapsed / cooldown * 100).toFixed(1) : 0}%`);
   $("ghostToggle").checked = Boolean(cfg.enabled);
   if (document.activeElement !== $("ghostAmount")) $("ghostAmount").value = cfg.amount;
   if (document.activeElement !== $("ghostChoice")) $("ghostChoice").value = cfg.choice;
@@ -796,6 +832,8 @@ function setStakeTier(delta) {
 }
 
 function renderStakeTierControls() {
+  if (lastRenderedStakeTier === stakeTier) return;
+  lastRenderedStakeTier = stakeTier;
   const steps = currentStakeSteps();
   document.querySelectorAll("[data-stake-step]").forEach(btn => {
     const index = Math.max(0, Math.min(steps.length - 1, Number(btn.dataset.stakeStep) || 0));
@@ -1609,6 +1647,8 @@ async function pollLobby() {
 }
 
 async function pollTable() {
+  if (pollTableInFlight) return;
+  pollTableInFlight = true;
   room = SHARED_ROOM;
   const chips = safeWholeNumber(state.chips);
   try {
@@ -1628,6 +1668,8 @@ async function pollTable() {
     applyRaceResult(data.lastRace);
   } catch {
     $("tableStatus").textContent = "Hors ligne";
+  } finally {
+    pollTableInFlight = false;
   }
 }
 
@@ -1892,8 +1934,15 @@ function loop(now) {
     addRaceScore(passive);
   }
   state.heat = Math.max(0, state.heat - 12 * dt);
-  syncRaceScore();
-  render();
+  if (now - lastRaceSyncCheckAt >= 250) {
+    lastRaceSyncCheckAt = now;
+    syncRaceScore();
+  }
+  const renderInterval = document.hidden ? HIDDEN_UI_RENDER_INTERVAL_MS : UI_RENDER_INTERVAL_MS;
+  if (now - lastUiRenderAt >= renderInterval) {
+    lastUiRenderAt = now;
+    render();
+  }
   requestAnimationFrame(loop);
 }
 
@@ -1903,6 +1952,18 @@ render(true);
 sendTableAction({ type: "join" });
 pollTable();
 setInterval(save, 4000);
-setInterval(pollTable, 2500);
+setInterval(() => {
+  if (!document.hidden) pollTable();
+}, 2500);
+setInterval(() => {
+  if (document.hidden) pollTable();
+}, 10000);
 setInterval(runAutomation, 1000);
+document.addEventListener("visibilitychange", () => {
+  lastTick = performance.now();
+  if (!document.hidden) {
+    pollTable();
+    render();
+  }
+});
 requestAnimationFrame(loop);

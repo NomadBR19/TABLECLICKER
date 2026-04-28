@@ -158,7 +158,7 @@ class SharedStateStore:
             jackpot = None
             if row["last_jackpot_amount"] is not None and row["last_jackpot_at"] is not None:
                 jackpot = {
-                    "amount": max(0, int(row["last_jackpot_amount"] or 0)),
+                    "amount": bounded_int(row["last_jackpot_amount"], 0, 0),
                     "at": float(row["last_jackpot_at"]),
                 }
             profiles[row["player_id"]] = {
