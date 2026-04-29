@@ -1,6 +1,6 @@
 import unittest
 
-from server import add_event, create_race, safe_game_kind, safe_player_id, safe_text
+from server import add_event, create_race, join_race, safe_game_kind, safe_player_id, safe_text, start_race
 from server_models import new_room_state
 
 
@@ -31,6 +31,31 @@ class ServerActionTests(unittest.TestCase):
         self.assertIsNotNone(race)
         self.assertTrue(race["id"].startswith("race-"))
         self.assertEqual(room["race"]["players"]["player-1"]["bet"], 100)
+
+    def test_start_race_keeps_chosen_bets(self):
+        room = new_room_state()
+        room["players"]["player-1"] = {"name": "Alice", "chips": 1000}
+        room["players"]["player-2"] = {"name": "Bob", "chips": 800}
+        create_race(room, "player-1", "Alice", 60, amount=100, chips=1000)
+        join_race(room, "player-2", "Bob", amount=250, chips=800)
+
+        race, error = start_race(room, "player-1")
+
+        self.assertEqual(error, "")
+        self.assertEqual(race["players"]["player-1"]["bet"], 100)
+        self.assertEqual(race["players"]["player-2"]["bet"], 250)
+
+    def test_start_race_rejects_bet_player_can_no_longer_pay(self):
+        room = new_room_state()
+        room["players"]["player-1"] = {"name": "Alice", "chips": 1000}
+        room["players"]["player-2"] = {"name": "Bob", "chips": 80}
+        create_race(room, "player-1", "Alice", 60, amount=100, chips=1000)
+        join_race(room, "player-2", "Bob", amount=250, chips=800)
+
+        race, error = start_race(room, "player-1")
+
+        self.assertIsNone(race)
+        self.assertIn("plus assez de jetons", error)
 
 
 if __name__ == "__main__":

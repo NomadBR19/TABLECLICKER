@@ -492,7 +492,7 @@ def create_race(room, player_id, name, duration, amount=0, chips=0):
             "score": 0,
             "seen": time.time(),
         }
-        add_event(room, f"{name} rejoint la course (all-in au depart).", "race")
+        add_event(room, f"{name} rejoint la course ({amount} jetons).", "race")
     return race, ""
 
 
@@ -515,7 +515,7 @@ def join_race(room, player_id, name, amount, chips):
         "score": 0,
         "seen": time.time(),
     }
-    add_event(room, f"{name} rejoint la course (all-in au depart).", "race")
+    add_event(room, f"{name} rejoint la course ({amount} jetons).", "race")
     return race, ""
 
 
@@ -532,16 +532,18 @@ def start_race(room, player_id):
     now = time.time()
     for pid, race_player in race.get("players", {}).items():
         current_chips = bounded_int(room.get("players", {}).get(pid, {}).get("chips", race_player.get("bet", 0)), 0, 0)
-        if current_chips <= 0:
-            return None, f"{race_player.get('name', 'Un joueur')} n'a pas de jetons a miser."
-        race_player["bet"] = current_chips
+        bet = bounded_int(race_player.get("bet", 0), 0, 0)
+        if bet <= 0:
+            return None, f"{race_player.get('name', 'Un joueur')} n'a pas de mise valide."
+        if bet > current_chips:
+            return None, f"{race_player.get('name', 'Un joueur')} n'a plus assez de jetons pour sa mise."
     race["status"] = "running"
     race["startedAt"] = now
     race["ends_at"] = now + race.get("duration", 60)
     for player in race.get("players", {}).values():
         player["score"] = 0
         player["seen"] = now
-    add_event(room, f"La course demarre pour {max(1, int(race.get('duration', 60)) // 60)} min. Tout le monde est all-in.", "race")
+    add_event(room, f"La course demarre pour {max(1, int(race.get('duration', 60)) // 60)} min.", "race")
     return race, ""
 
 

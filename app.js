@@ -66,6 +66,7 @@ let mode = "table";
 let room = SHARED_ROOM;
 let playerId = getPlayerId();
 let lastTick = performance.now();
+let chipFractionRemainder = 0;
 let bj = null;
 let stakes = { roulette: 25, blackjack: 40, poker: 50, slots: 25 };
 let stakeTier = Math.max(0, Math.min(MAX_STAKE_TIER, Math.floor(Number(localStorage.getItem("table-clicker-stake-tier")) || 0)));
@@ -196,7 +197,20 @@ function getPlayerId() {
 }
 
 function gain(amount) {
-  state.chips = safeWholeNumber(state.chips + Math.max(0, Number(amount) || 0));
+  const positive = Math.max(0, Number(amount) || 0);
+  if (positive <= 0) return 0;
+  const total = chipFractionRemainder + positive;
+  const whole = Math.floor(total);
+  chipFractionRemainder = total - whole;
+  if (whole > 0) {
+    state.chips = safeWholeNumber(state.chips + whole);
+    if (state.chips >= MAX_SAFE_CHIPS) chipFractionRemainder = 0;
+  }
+  return whole;
+}
+
+function resetChipFractionRemainder() {
+  chipFractionRemainder = 0;
 }
 
 function addRaceScore(amount) {
@@ -1343,9 +1357,10 @@ function rememberSet(storageKey, set, value) {
   return next;
 }
 
-function rememberRaceSnapshot(raceId) {
+function rememberRaceSnapshot(raceId, bet = 0) {
   if (!raceId || raceSnapshots[raceId]) return;
   raceSnapshots[raceId] = {
+    chips: Math.max(0, safeWholeNumber(state.chips) - Math.max(0, Math.floor(Number(bet) || 0))),
     heat: state.heat,
     upgrades: { ...state.upgrades },
     automation: JSON.parse(JSON.stringify(state.automation || {}))
@@ -1356,6 +1371,7 @@ function rememberRaceSnapshot(raceId) {
 function restoreRaceSnapshot(raceId) {
   const snapshot = raceSnapshots[raceId];
   if (!snapshot) return false;
+  state.chips = safeWholeNumber(snapshot.chips);
   state.heat = Number(snapshot.heat) || 0;
   state.upgrades = { ...snapshot.upgrades };
   state.automation = JSON.parse(JSON.stringify(snapshot.automation || {}));
@@ -1383,9 +1399,8 @@ function updateRaceControls() {
   $("raceJoin").textContent = me && lobby ? "Annuler" : "Rejoindre";
   $("raceStart").disabled = !lobby || !isHost || (race.players || []).length < 2;
   $("raceDuration").disabled = hasRace;
-  $("raceBetPreview").textContent = running && me
-    ? `${fmt.format(me.bet || 0)} engages`
-    : "All-in au depart";
+  $("raceBetAmount").disabled = Boolean(running || (lobby && me));
+  if (running && me) $("raceBetAmount").value = Math.max(1, Math.floor(Number(me.bet || 1)));
   $("raceProgress").style.width = running
     ? `${Math.max(0, Math.min(100, (race.remaining / race.duration) * 100))}%`
     : "0%";
@@ -1408,9 +1423,10 @@ function formatRaceDuration(seconds) {
 function applyRaceStartReset(race, me) {
   if (!race || !me || me.id !== playerId || me.self !== true || me.participant !== true || paidRaceIds.has(race.id)) return;
   const bet = Math.max(0, Math.floor(Number(me.bet || 0)));
-  rememberRaceSnapshot(race.id);
+  rememberRaceSnapshot(race.id, bet);
   state.stats.gambled = safeWholeNumber(state.stats.gambled + bet);
   state.chips = 0;
+  resetChipFractionRemainder();
   state.heat = 0;
   state.upgrades = emptyUpgrades();
   state.automation.roulette.enabled = false;
@@ -1418,7 +1434,7 @@ function applyRaceStartReset(race, me) {
   paidRaceIds = rememberSet("table-clicker-paid-races", paidRaceIds, race.id);
   raceScore = 0;
   lastRaceScoreSent = 0;
-  $("ticker").textContent = `Course lancee: all-in de ${fmt.format(bet)} jetons, depart a zero.`;
+  $("ticker").textContent = `Course lancee: mise de ${fmt.format(bet)} jetons, depart a zero.`;
   save();
   render(true);
 }
@@ -1455,7 +1471,7 @@ function renderRace(race) {
     setHtmlIfChanged("racePlayers", sortedRacePlayers.map(p => `
     <div class="ready-player race-player${p.self ? " self" : ""}">
       <div>
-        <span>${escapeHtml(p.name)}${p.self ? " (toi)" : ""}${p.host ? " - hote" : ""}</span>
+        <span>${escapeHtml(p.name)}${p.self ? " (toi)" : ""}${p.host ? " - hote" : ""} - mise ${fmt.format(p.bet || 0)}</span>
         <div class="race-player-track"><i style="width:${Math.max(3, Math.min(100, Number(p.score || 0) / maxScore * 100))}%"></i></div>
       </div>
       <strong>${fmt.format(Math.floor(p.score || 0))}</strong>
@@ -1469,7 +1485,7 @@ function renderRace(race) {
     $("raceLog").textContent = `Pot ${fmt.format(pot)}. Le meilleur score gagne.`;
   } else {
     $("raceStatus").textContent = `${race.hostName} invite la table`;
-    $("raceLog").textContent = `Course de ${formatRaceDuration(race.duration)}. Chaque joueur misera tous ses jetons au depart.`;
+    $("raceLog").textContent = `Course de ${formatRaceDuration(race.duration)}. Choisis ta mise avant de rejoindre.`;
   }
   renderRaceWagers(race);
   updateRaceControls();
@@ -1528,8 +1544,8 @@ function applyRaceResult(result) {
   currentRace = null;
   wonRaceIds = rememberSet("table-clicker-won-races", wonRaceIds, result.id);
   if (me) {
-    restoreRaceSnapshot(result.id);
-    state.chips = 0;
+    if (!restoreRaceSnapshot(result.id)) state.chips = 0;
+    resetChipFractionRemainder();
   }
   if (result.winnerId === playerId) {
     gain(result.payout);
@@ -1573,8 +1589,10 @@ async function placeRaceWager() {
 async function createRace() {
   const minutes = Math.max(1, Math.floor(Number($("raceDuration").value) || 1));
   const duration = minutes * 60;
-  if (state.chips <= 0) return log("raceLog", "Il faut au moins 1 jeton pour ouvrir une course.");
-  const res = await sendTableAction({ type: "race_create", duration, amount: state.chips }, true);
+  const amount = raceBetAmount();
+  if (amount <= 0) return log("raceLog", "Il faut miser au moins 1 jeton pour ouvrir une course.");
+  if (amount > state.chips) return log("raceLog", "Mise course impossible.");
+  const res = await sendTableAction({ type: "race_create", duration, amount }, true);
   if (!res.ok) return log("raceLog", res.error || "Course impossible.");
   renderRace(res.race);
   pollTable();
@@ -1584,12 +1602,17 @@ async function joinRace() {
   const race = currentRace;
   if (!race || race.status !== "lobby") return;
   const me = myRaceRunner(race);
-  const amount = me ? 0 : state.chips;
+  const amount = me ? 0 : raceBetAmount();
   if (!me && amount <= 0) return log("raceLog", "Il faut au moins 1 jeton pour rejoindre une course.");
+  if (!me && amount > state.chips) return log("raceLog", "Mise course impossible.");
   const res = await sendTableAction({ type: "race_join", amount }, true);
   if (!res.ok) return log("raceLog", res.error || "Participation impossible.");
   renderRace(res.race);
   pollTable();
+}
+
+function raceBetAmount() {
+  return Math.max(0, Math.floor(Number($("raceBetAmount").value) || 0));
 }
 
 async function startRace() {

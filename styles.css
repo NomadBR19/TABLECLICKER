@@ -1420,7 +1420,7 @@ h3 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; }
   gap: 5px;
 }
 
-#raceBetPreview {
+.race-setup input {
   display: grid;
   align-items: center;
   min-height: 43px;
