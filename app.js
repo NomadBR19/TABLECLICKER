@@ -51,6 +51,40 @@ const MAX_STAKE_TIER = 12;
 const MAX_SAFE_CHIPS = Number.MAX_SAFE_INTEGER;
 const UI_RENDER_INTERVAL_MS = 250;
 const HIDDEN_UI_RENDER_INTERVAL_MS = 1000;
+const DAILY_TICKET_SCRATCH_THRESHOLD = .36;
+const DAILY_TICKET_ICONS = {
+  chips: "\uD83D\uDCB0",
+  boost: "\u26A1",
+  upgrade: "\uD83C\uDF9F",
+  skin: "\u2728",
+  cosmetic: "\uD83D\uDC8E"
+};
+const TEMP_BONUS_RESET_KEY = "table-clicker-temp-bonuses-reset-2026-04-29";
+const STICKER_REMOVAL_KEY = "table-clicker-stickers-removed-2026-04-29";
+const DAILY_TICKET_CLAIMED_DATE_KEY = "table-clicker-daily-ticket-claimed-date";
+const COSMETIC_ITEMS = {
+  frames: {
+    felt: { name: "Feutre vert", rarity: "common" },
+    copper: { name: "Cuivre", rarity: "common" },
+    neon: { name: "Neon club", rarity: "rare" },
+    ice: { name: "Glace", rarity: "rare" },
+    rose: { name: "Rose gold", rarity: "rare" },
+    gold: { name: "Or royal", rarity: "epic" },
+    void: { name: "Vide astral", rarity: "epic" },
+    glitch: { name: "Glitch", rarity: "legendary" },
+    diamond: { name: "Diamant noir", rarity: "legendary" }
+  },
+  emojis: {
+    clover: { name: "Trefle", emoji: "\u2618", rarity: "common" },
+    chip: { name: "Jeton", emoji: "\uD83D\uDFE1", rarity: "common" },
+    crown: { name: "Couronne", emoji: "\uD83D\uDC51", rarity: "rare" },
+    fire: { name: "Flamme", emoji: "\uD83D\uDD25", rarity: "rare" },
+    star: { name: "Etoile", emoji: "\u2B50", rarity: "rare" },
+    diamond: { name: "Diamant", emoji: "\uD83D\uDC8E", rarity: "epic" },
+    rocket: { name: "Fusee", emoji: "\uD83D\uDE80", rarity: "epic" },
+    phoenix: { name: "Phoenix", emoji: "\uD83D\uDD25", rarity: "legendary" }
+  }
+};
 
 const state = load() || {
   chips: 0,
@@ -58,8 +92,12 @@ const state = load() || {
   name: `Joueur${Math.floor(Math.random() * 900 + 100)}`,
   upgrades: Object.fromEntries(upgrades.map(u => [u.id, 0])),
   stats: { gambled: 0, won: 0 },
+  daily: { boosts: [], tempUpgrades: [], skin: null },
+  cosmetics: { owned: {}, equipped: { frame: "", emoji: "" } },
   automation: { roulette: { ...DEFAULT_AUTOMATION.roulette } }
 };
+resetTemporaryBonusesOnce();
+removeStickersOnce();
 normalizeState();
 
 let mode = "table";
@@ -82,6 +120,7 @@ let lastRenderedSlotsJackpot = null;
 let lastRenderedSlotsLevel = "";
 let lastRenderedSlotsTier = "";
 let lastRenderedStakeTier = null;
+let lastDailyEffectsKey = "";
 let pokerBusy = false;
 let lastPokerGameAt = Number(localStorage.getItem("table-clicker-last-poker") || 0);
 let paidPokerHands = new Set(JSON.parse(localStorage.getItem("table-clicker-paid-poker-hands") || "[]"));
@@ -115,6 +154,13 @@ let activeCelebrationCanvas = null;
 let lastUiRenderAt = 0;
 let lastRaceSyncCheckAt = 0;
 let pollTableInFlight = false;
+let dailyTicketStatus = null;
+let localDailyTicketClaimedDate = localStorage.getItem(DAILY_TICKET_CLAIMED_DATE_KEY) || "";
+let scratchReward = null;
+let scratchClaimed = false;
+let scratchDrawing = false;
+let scratchCleared = false;
+let scratchLastPoint = null;
 const emojiSpriteCache = new Map();
 const prefersReducedMotion = globalThis.matchMedia ? globalThis.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
@@ -163,7 +209,31 @@ function load() {
   try { return JSON.parse(localStorage.getItem("table-clicker-save")); } catch { return null; }
 }
 
+function resetTemporaryBonusesOnce() {
+  if (localStorage.getItem(TEMP_BONUS_RESET_KEY) === "done") return;
+  state.daily = state.daily || {};
+  state.daily.boosts = [];
+  state.daily.tempUpgrades = [];
+  state.daily.skin = null;
+  localStorage.setItem(TEMP_BONUS_RESET_KEY, "done");
+  save();
+}
+
+function removeStickersOnce() {
+  if (localStorage.getItem(STICKER_REMOVAL_KEY) === "done") return;
+  state.cosmetics = state.cosmetics || {};
+  state.cosmetics.stickers = [];
+  if (state.cosmetics.owned) {
+    Object.keys(state.cosmetics.owned).forEach(key => {
+      if (key.startsWith("sticker:")) delete state.cosmetics.owned[key];
+    });
+  }
+  localStorage.setItem(STICKER_REMOVAL_KEY, "done");
+  save();
+}
+
 function normalizeState() {
+  const now = Date.now();
   state.chips = safeWholeNumber(state.chips);
   state.heat = Math.max(0, Math.min(100, Number(state.heat) || 0));
   state.upgrades = state.upgrades || {};
@@ -173,6 +243,17 @@ function normalizeState() {
   state.stats = state.stats || { gambled: 0, won: 0 };
   state.stats.gambled = safeWholeNumber(state.stats.gambled);
   state.stats.won = safeWholeNumber(state.stats.won);
+  state.daily = state.daily || {};
+  state.daily.boosts = (state.daily.boosts || []).filter(boost => Number(boost.expiresAt || 0) > now);
+  state.daily.tempUpgrades = (state.daily.tempUpgrades || []).filter(item => Number(item.expiresAt || 0) > now);
+  if (state.daily.skin && Number(state.daily.skin.expiresAt || 0) <= now) state.daily.skin = null;
+  state.cosmetics = state.cosmetics || {};
+  state.cosmetics.owned = state.cosmetics.owned || {};
+  state.cosmetics.equipped = {
+    frame: state.cosmetics.equipped?.frame && COSMETIC_ITEMS.frames[state.cosmetics.equipped.frame] ? state.cosmetics.equipped.frame : "",
+    emoji: state.cosmetics.equipped?.emoji && COSMETIC_ITEMS.emojis[state.cosmetics.equipped.emoji] ? state.cosmetics.equipped.emoji : ""
+  };
+  delete state.cosmetics.stickers;
   state.slots = state.slots || {};
   state.slots.jackpot = safeJackpot(state.slots.jackpot);
   state.slots.spins = Math.max(0, Math.floor(Number(state.slots.spins) || 0));
@@ -227,12 +308,54 @@ function spend(amount) {
   return true;
 }
 
+function activeMultiplier(target) {
+  const now = Date.now();
+  return (state.daily?.boosts || [])
+    .filter(boost => boost.target === target && Number(boost.expiresAt || 0) > now)
+    .reduce((mult, boost) => mult * Math.max(1, Number(boost.multiplier) || 1), 1);
+}
+
+function tempUpgradeLevel(id) {
+  const now = Date.now();
+  return (state.daily?.tempUpgrades || [])
+    .filter(item => item.id === id && Number(item.expiresAt || 0) > now)
+    .reduce((sum, item) => sum + Math.max(0, Math.floor(Number(item.levels) || 0)), 0);
+}
+
+function upgradeLevel(id) {
+  return Math.max(0, Math.floor(Number(state.upgrades[id]) || 0)) + tempUpgradeLevel(id);
+}
+
+function dailyEffectsKey() {
+  const now = Date.now();
+  const boosts = (state.daily?.boosts || []).filter(boost => Number(boost.expiresAt || 0) > now)
+    .map(boost => `${boost.target}:${boost.multiplier}:${Math.floor(Number(boost.expiresAt || 0) / 1000)}`);
+  const tempUpgrades = (state.daily?.tempUpgrades || []).filter(item => Number(item.expiresAt || 0) > now)
+    .map(item => `${item.id}:${item.levels}:${Math.floor(Number(item.expiresAt || 0) / 1000)}`);
+  const skin = state.daily?.skin && Number(state.daily.skin.expiresAt || 0) > now
+    ? `${state.daily.skin.id}:${Math.floor(Number(state.daily.skin.expiresAt || 0) / 1000)}`
+    : "";
+  const cosmetics = [
+    state.cosmetics?.equipped?.frame || "",
+    state.cosmetics?.equipped?.emoji || "",
+    Object.keys(state.cosmetics?.owned || {}).sort().join(",")
+  ].join(";");
+  return [...boosts, ...tempUpgrades, skin, cosmetics].join("|");
+}
+
+function formatRemaining(ms) {
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  if (seconds >= 3600) return `${Math.ceil(seconds / 3600)}h`;
+  if (seconds >= 60) return `${Math.ceil(seconds / 60)}min`;
+  return `${seconds}s`;
+}
+
 function clickPower() {
-  return 1 + upgrades.reduce((sum, u) => sum + state.upgrades[u.id] * u.click, 0);
+  return (1 + upgrades.reduce((sum, u) => sum + upgradeLevel(u.id) * u.click, 0)) * activeMultiplier("click");
 }
 
 function cps() {
-  return upgrades.reduce((sum, u) => sum + state.upgrades[u.id] * u.cps, 0);
+  return upgrades.reduce((sum, u) => sum + upgradeLevel(u.id) * u.cps, 0) * activeMultiplier("cps");
 }
 
 function ghostDealerLevel() {
@@ -251,15 +374,22 @@ function upgradeCost(u) {
 function renderUpgrades() {
   $("upgrades").innerHTML = upgrades.map(u => {
     const owned = state.upgrades[u.id];
+    const temp = tempUpgradeLevel(u.id);
     const cost = upgradeCost(u);
     return `<button class="upgrade" data-upgrade="${u.id}">
-      <span><strong>${escapeHtml(u.name)} niv. ${owned}</strong><p>${escapeHtml(u.desc)}</p></span>
+      <span><strong>${escapeHtml(u.name)} niv. ${owned}${temp ? ` +${temp}` : ""}</strong><p>${escapeHtml(u.desc)}</p></span>
       <strong>${fmt.format(cost)}</strong>
     </button>`;
   }).join("");
 }
 
 function render(forceUpgrades = false) {
+  normalizeState();
+  const effectsKey = dailyEffectsKey();
+  if (effectsKey !== lastDailyEffectsKey) {
+    forceUpgrades = true;
+    lastDailyEffectsKey = effectsKey;
+  }
   setText("chips", fmt.format(state.chips));
   setText("income", `${fmt.format(cps())}/s`);
   setText("clickValue", `+${fmt.format(clickPower())}`);
@@ -274,8 +404,364 @@ function render(forceUpgrades = false) {
   updateRaceControls();
   setWidth("heatFill", `${Math.min(100, state.heat).toFixed(1)}%`);
   renderAutomation();
+  renderDailyTicket();
+  renderTicketSkin();
+  renderDailyEffects();
   if (document.activeElement !== $("playerName")) $("playerName").value = state.name;
   if (forceUpgrades) renderUpgrades();
+}
+
+function renderTicketSkin() {
+  const skin = state.daily?.skin;
+  const active = skin && Number(skin.expiresAt || 0) > Date.now() ? skin.id : "";
+  if (active) document.body.dataset.ticketSkin = active;
+  else delete document.body.dataset.ticketSkin;
+}
+
+function renderDailyTicket() {
+  const notice = $("dailyTicketNotice");
+  if (!notice) return;
+  const locallyClaimed = dailyTicketStatus?.date && localDailyTicketClaimedDate === dailyTicketStatus.date;
+  const available = Boolean(dailyTicketStatus && dailyTicketStatus.available && !locallyClaimed);
+  notice.hidden = !available;
+  if (available) {
+    const streak = Math.max(0, Math.floor(Number(dailyTicketStatus.streak || 0)));
+    $("dailyTicketNoticeText").textContent = streak ? `Serie ${streak}` : "Disponible";
+  }
+}
+
+function reconcileDailyTicketStatus(status) {
+  if (!status) return status;
+  if (status.claimed && status.date) rememberDailyTicketClaimed(status.date);
+  if (status.date && localDailyTicketClaimedDate === status.date) {
+    return { ...status, available: false, claimed: true };
+  }
+  return status;
+}
+
+function renderDailyEffects() {
+  const holder = $("dailyEffectsList");
+  if (!holder) return;
+  const now = Date.now();
+  const rows = [];
+  for (const boost of state.daily?.boosts || []) {
+    const expiresAt = Number(boost.expiresAt || 0);
+    if (expiresAt <= now) continue;
+    rows.push({
+      icon: DAILY_TICKET_ICONS.boost,
+      title: boost.label || "Boost temporaire",
+      detail: boost.target === "click" ? `x${boost.multiplier} par clic` : `x${boost.multiplier} jetons/s`,
+      remaining: formatRemaining(expiresAt - now)
+    });
+  }
+  for (const item of state.daily?.tempUpgrades || []) {
+    const expiresAt = Number(item.expiresAt || 0);
+    if (expiresAt <= now) continue;
+    const upgrade = upgrades.find(u => u.id === item.id);
+    rows.push({
+      icon: DAILY_TICKET_ICONS.upgrade,
+      title: item.label || "Amelioration temporaire",
+      detail: `+${fmt.format(item.levels || 0)} ${upgrade ? upgrade.name : "niveau"}`,
+      remaining: formatRemaining(expiresAt - now)
+    });
+  }
+  if (state.daily?.skin && Number(state.daily.skin.expiresAt || 0) > now) {
+    rows.push({
+      icon: DAILY_TICKET_ICONS.skin,
+      title: state.daily.skin.label || "Skin temporaire",
+      detail: "Habillage visuel actif",
+      remaining: formatRemaining(Number(state.daily.skin.expiresAt || 0) - now)
+    });
+  }
+  const html = rows.length
+    ? `<div class="daily-effects-title">Bonus temporaires</div>${rows.map(row => `
+      <div class="daily-effect-row">
+        <b>${escapeHtml(row.icon)}</b>
+        <span><strong>${escapeHtml(row.title)}</strong><small>${escapeHtml(row.detail)}</small></span>
+        <em>${escapeHtml(row.remaining)}</em>
+      </div>
+    `).join("")}`
+    : "";
+  const cosmeticsHtml = renderCosmeticInventory();
+  setHtmlIfChanged("dailyEffectsList", `${html}${cosmeticsHtml}`);
+}
+
+function ownedCosmeticIds(type) {
+  return Object.keys(state.cosmetics?.owned || {}).filter(key => key.startsWith(`${type}:`)).map(key => key.split(":")[1]);
+}
+
+function cosmeticRarityLabel(rarity) {
+  return rarity === "legendary" ? "Legendaire" : rarity === "epic" ? "Epique" : rarity === "rare" ? "Rare" : "Commun";
+}
+
+function renderCosmeticInventory() {
+  const frameIds = ownedCosmeticIds("frame");
+  const emojiIds = ownedCosmeticIds("emoji");
+  if (!frameIds.length && !emojiIds.length) return "";
+  const frameRows = frameIds.map(id => cosmeticButton("frame", id, COSMETIC_ITEMS.frames[id], state.cosmetics.equipped.frame === id)).join("");
+  const emojiRows = emojiIds.map(id => cosmeticButton("emoji", id, COSMETIC_ITEMS.emojis[id], state.cosmetics.equipped.emoji === id)).join("");
+  return `<div class="daily-effects-title">Collection</div>
+    <div class="cosmetic-inventory">
+      ${frameRows}
+      ${emojiRows}
+    </div>`;
+}
+
+function cosmeticButton(type, id, item, equipped) {
+  const icon = type === "emoji" ? item.emoji : "\u25C7";
+  return `<button class="cosmetic-chip ${equipped ? "equipped" : ""}" data-equip-type="${escapeHtml(type)}" data-equip-id="${escapeHtml(id)}">
+    <b>${escapeHtml(icon)}</b><span>${escapeHtml(item.name)}<small>${equipped ? "Equipe" : cosmeticRarityLabel(item.rarity)}</small></span>
+  </button>`;
+}
+
+function equippedCosmeticsPayload() {
+  return {
+    frame: state.cosmetics?.equipped?.frame || "",
+    emoji: state.cosmetics?.equipped?.emoji || ""
+  };
+}
+
+function cosmeticNameHtml(name, cosmetics = {}, extra = "") {
+  const frame = COSMETIC_ITEMS.frames[cosmetics.frame] ? cosmetics.frame : "";
+  const emoji = COSMETIC_ITEMS.emojis[cosmetics.emoji]?.emoji || "";
+  return `<span class="cosmetic-name ${frame ? `frame-${escapeHtml(frame)}` : ""}">${emoji ? `<i>${escapeHtml(emoji)}</i>` : ""}${escapeHtml(name)}${extra}</span>`;
+}
+
+function addOwnedCosmetic(type, id) {
+  if (!id) return;
+  const exists = (type === "frame" && COSMETIC_ITEMS.frames[id])
+    || (type === "emoji" && COSMETIC_ITEMS.emojis[id]);
+  if (!exists) return;
+  state.cosmetics.owned[`${type}:${id}`] = true;
+}
+
+function equipCosmetic(type, id) {
+  if (state.cosmetics.equipped[type] === id) state.cosmetics.equipped[type] = "";
+  else state.cosmetics.equipped[type] = id;
+  save();
+  render(true);
+  sendTableAction({ type: "join" });
+}
+
+function rewardDescription(reward) {
+  if (!reward) return "Frotte la zone metallisee pour reveler le gain.";
+  if (reward.kind === "chips") return `+${fmt.format(reward.amount || 0)} jetons immediats.`;
+  if (reward.kind === "boost") return `x${Number(reward.multiplier || 1).toLocaleString("fr-FR")} ${reward.target === "click" ? "par clic" : "jetons/s"} pendant ${Math.round((reward.duration || 0) / 60)} min.`;
+  if (reward.kind === "upgrade") {
+    const upgrade = upgrades.find(u => u.id === reward.upgradeId);
+    return `+${fmt.format(reward.levels || 0)} niveau temporaire ${upgrade ? upgrade.name : "amelioration"} pendant 30 min.`;
+  }
+  if (reward.kind === "skin") return "Skin visuel actif pendant 24h.";
+  if (reward.kind === "cosmetic") return `${cosmeticRarityLabel(reward.rarity)} permanent a equiper dans la collection.`;
+  return "Gain du bonus a gratter.";
+}
+
+function applyTicketReward(reward) {
+  if (!reward) return;
+  const now = Date.now();
+  if (reward.kind === "chips") {
+    gain(reward.amount || 0);
+    state.stats.won = safeWholeNumber(state.stats.won + Math.max(0, Number(reward.amount) || 0));
+  } else if (reward.kind === "boost") {
+    state.daily.boosts.push({
+      target: reward.target,
+      multiplier: Math.max(1, Number(reward.multiplier) || 1),
+      label: reward.label,
+      expiresAt: now + Math.max(60, Number(reward.duration) || 60) * 1000
+    });
+  } else if (reward.kind === "upgrade") {
+    state.daily.tempUpgrades.push({
+      id: reward.upgradeId,
+      levels: Math.max(1, Math.floor(Number(reward.levels) || 1)),
+      label: reward.label,
+      expiresAt: now + 30 * 60 * 1000
+    });
+  } else if (reward.kind === "skin") {
+    state.daily.skin = {
+      id: reward.skin || "neon",
+      label: reward.label,
+      expiresAt: now + Math.max(60, Number(reward.duration) || 60) * 1000
+    };
+  } else if (reward.kind === "cosmetic") {
+    addOwnedCosmetic(reward.cosmeticType, reward.itemId);
+    if (reward.cosmeticType === "frame" || reward.cosmeticType === "emoji") {
+      state.cosmetics.equipped[reward.cosmeticType] = reward.itemId;
+      sendTableAction({ type: "join" });
+    }
+  }
+  $("ticker").textContent = `${reward.label}: ${rewardDescription(reward)}`;
+  save();
+  render(true);
+}
+
+function setScratchReward(reward) {
+  scratchReward = reward;
+  $("scratchRewardKind").textContent = DAILY_TICKET_ICONS[reward?.kind] || "\u2728";
+  $("scratchRewardLabel").textContent = reward?.label || "Bonus a gratter";
+  $("scratchRewardDesc").textContent = rewardDescription(reward);
+}
+
+function openScratchModal() {
+  const modal = $("scratchModal");
+  if (!modal) return;
+  modal.hidden = false;
+  scratchReward = null;
+  scratchClaimed = false;
+  scratchCleared = false;
+  scratchLastPoint = null;
+  $("scratchClaim").disabled = true;
+  $("scratchClaim").hidden = true;
+  $("scratchReveal").disabled = true;
+  $("scratchClose").disabled = false;
+  $("scratchTitle").textContent = "A gratter";
+  $("scratchDate").textContent = dailyTicketStatus?.date || "Aujourd'hui";
+  $("scratchStreak").textContent = `Serie ${Math.max(0, Math.floor(Number(dailyTicketStatus?.streak || 0)))}`;
+  $("scratchLog").textContent = "Preparation du bonus...";
+  setScratchReward(null);
+  prepareScratchCanvas(false);
+  if (dailyTicketStatus?.available) window.setTimeout(claimScratchTicket, 80);
+}
+
+function closeScratchModal() {
+  if (scratchClaimed && !scratchCleared) {
+    $("scratchLog").textContent = "Gratte ou revele le bonus avant de fermer.";
+    return;
+  }
+  $("scratchModal").hidden = true;
+}
+
+function prepareScratchCanvas(active = true) {
+  const canvas = $("scratchCanvas");
+  const area = $("scratchArea");
+  const rect = area.getBoundingClientRect();
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  canvas.style.width = `${rect.width}px`;
+  canvas.style.height = `${rect.height}px`;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+  const gradient = ctx.createLinearGradient(0, 0, rect.width, rect.height);
+  gradient.addColorStop(0, active ? "#f4f0df" : "rgba(180,180,180,.65)");
+  gradient.addColorStop(.5, active ? "#a9b0b9" : "rgba(120,120,120,.7)");
+  gradient.addColorStop(1, active ? "#eef6f5" : "rgba(160,160,160,.65)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, rect.width, rect.height);
+  ctx.lineCap = "butt";
+  for (let x = -rect.height; x < rect.width + rect.height; x += 28) {
+    ctx.beginPath();
+    ctx.moveTo(x, rect.height);
+    ctx.lineTo(x + rect.height, 0);
+    ctx.lineWidth = 13;
+    ctx.strokeStyle = active ? "rgba(255,255,255,.18)" : "rgba(255,255,255,.09)";
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + 13, rect.height);
+    ctx.lineTo(x + rect.height + 13, 0);
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = active ? "rgba(54,62,70,.16)" : "rgba(54,62,70,.12)";
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "rgba(255,255,255,.38)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(8, 8, rect.width - 16, rect.height - 16);
+  ctx.fillStyle = active ? "rgba(42,45,50,.55)" : "rgba(42,45,50,.42)";
+  ctx.font = "900 22px Trebuchet MS, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(active ? "GRATTE ICI" : "BONUS EN ATTENTE", rect.width / 2, rect.height / 2);
+}
+
+async function claimScratchTicket() {
+  if ((scratchClaimed && !scratchCleared) || !(dailyTicketStatus && dailyTicketStatus.available)) return;
+  scratchReward = null;
+  scratchClaimed = false;
+  scratchCleared = false;
+  scratchLastPoint = null;
+  setScratchReward(null);
+  prepareScratchCanvas(false);
+  $("scratchClaim").disabled = true;
+  $("scratchClaim").hidden = true;
+  $("scratchReveal").disabled = true;
+  $("scratchLog").textContent = "Le bonus arrive sur la table...";
+  const res = await sendTableAction({ type: "ticket_claim" }, true);
+  if (!res.ok) {
+    dailyTicketStatus = res.dailyTicket || dailyTicketStatus;
+    if (dailyTicketStatus?.claimed && dailyTicketStatus.date) rememberDailyTicketClaimed(dailyTicketStatus.date);
+    $("scratchLog").textContent = res.error || "Bonus indisponible.";
+    renderDailyTicket();
+    return;
+  }
+  dailyTicketStatus = res.dailyTicket || dailyTicketStatus;
+  if (dailyTicketStatus?.date) rememberDailyTicketClaimed(dailyTicketStatus.date);
+  scratchClaimed = true;
+  setScratchReward(res.reward);
+  prepareScratchCanvas(true);
+  $("scratchReveal").disabled = false;
+  $("scratchClose").disabled = true;
+  $("scratchLog").textContent = "Frotte la zone metallisee avec la souris ou le doigt.";
+  renderDailyTicket();
+}
+
+function rememberDailyTicketClaimed(date) {
+  localDailyTicketClaimedDate = date;
+  localStorage.setItem(DAILY_TICKET_CLAIMED_DATE_KEY, date);
+}
+
+function scratchAt(clientX, clientY) {
+  if (!scratchClaimed || scratchCleared) return;
+  const canvas = $("scratchCanvas");
+  const rect = canvas.getBoundingClientRect();
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const previous = scratchLastPoint || { x, y };
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 58;
+  ctx.beginPath();
+  ctx.moveTo(previous.x, previous.y);
+  ctx.lineTo(x, y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, y, 29, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  scratchLastPoint = { x, y };
+  if (scratchCoverage() >= DAILY_TICKET_SCRATCH_THRESHOLD) revealScratchTicket();
+}
+
+function scratchCoverage() {
+  const canvas = $("scratchCanvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return 0;
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  let clear = 0;
+  for (let i = 3; i < pixels.length; i += 16) {
+    if (pixels[i] < 20) clear += 1;
+  }
+  return clear / Math.max(1, pixels.length / 16);
+}
+
+function revealScratchTicket() {
+  if (!scratchClaimed || scratchCleared) return;
+  scratchCleared = true;
+  const canvas = $("scratchCanvas");
+  const ctx = canvas.getContext("2d");
+  if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+  $("scratchReveal").disabled = true;
+  $("scratchClose").disabled = false;
+  $("scratchClaim").hidden = false;
+  $("scratchClaim").disabled = !(dailyTicketStatus && dailyTicketStatus.available);
+  $("scratchLog").textContent = rewardDescription(scratchReward);
+  applyTicketReward(scratchReward);
+  celebrate($("scratchArea"), scratchReward?.id === "jackpot" ? "mega" : "win");
+  if (scratchReward?.id === "jackpot") grandCelebrate($("scratchArea"), "jackpot");
 }
 
 function deck() {
@@ -1647,7 +2133,7 @@ async function sendTableAction(action, expectJson = false) {
     const res = await fetch("/api/action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ room, playerId, name: state.name, chips, action })
+      body: JSON.stringify({ room, playerId, name: state.name, chips, cosmetics: equippedCosmeticsPayload(), action })
     });
     const data = await res.json();
     if (!res.ok || data.ok === false) return { ok: false, error: data.error || "Action refusee." };
@@ -1687,6 +2173,8 @@ async function pollTable() {
     renderPokerReady(data.pokerReady || [], data.pokerReadyDeadline || 0);
     renderPokerHand(data.pokerHand || null);
     renderRace(data.race || null);
+    dailyTicketStatus = reconcileDailyTicketStatus(data.dailyTicket || dailyTicketStatus);
+    renderDailyTicket();
     applyPokerGame(data.lastGame);
     applyRaceResult(data.lastRace);
   } catch {
@@ -1705,13 +2193,13 @@ function renderRoomPlayers(players) {
 }
 
 function renderLobby(players) {
-  const key = players.map(p => `${p.id}:${p.name}:${p.ip || ""}:${p.host || ""}:${p.lastJackpot?.amount || 0}:${p.lastJackpot?.at || 0}`).join("|");
+  const key = players.map(p => `${p.id}:${p.name}:${p.cosmetics?.frame || ""}:${p.cosmetics?.emoji || ""}:${p.ip || ""}:${p.host || ""}:${p.lastJackpot?.amount || 0}:${p.lastJackpot?.at || 0}`).join("|");
   if (key === lastLobbyKey) return;
   lastLobbyKey = key;
   setHtmlIfChanged("onlinePlayers", players.map(p => `
     <div class="player-detail${p.self ? " self" : ""}">
       <div class="player-detail-head">
-        <strong>${escapeHtml(p.name)}${p.self ? " (toi)" : ""}</strong>
+        <strong>${cosmeticNameHtml(p.name, p.cosmetics, p.self ? " (toi)" : "")}</strong>
       </div>
       <dl>
         <dt>IP</dt><dd>${escapeHtml(p.ip || "inconnue")}</dd>
@@ -1730,7 +2218,9 @@ function renderRaceLeaderboard(entries) {
     entry.wins,
     Math.floor(Number(entry.bestScore || 0)),
     entry.bestPayout || 0,
-    entry.self
+    entry.self,
+    entry.self ? state.cosmetics.equipped.frame : "",
+    entry.self ? state.cosmetics.equipped.emoji : ""
   ].join(":")).join("|");
   if (key === lastRaceLeaderboardKey) return;
   lastRaceLeaderboardKey = key;
@@ -1743,7 +2233,7 @@ function renderRaceLeaderboard(entries) {
     <div class="leaderboard-row${entry.self ? " self" : ""}">
       <strong class="leaderboard-rank">#${index + 1}</strong>
       <div>
-        <span>${escapeHtml(entry.name)}${entry.self ? " (toi)" : ""}</span>
+        ${cosmeticNameHtml(entry.name, entry.self ? equippedCosmeticsPayload() : {}, entry.self ? " (toi)" : "")}
         <small>${fmt.format(races)} course${races > 1 ? "s" : ""} - record ${fmt.format(bestScore)}</small>
       </div>
       <strong>${fmt.format(wins)} victoire${wins > 1 ? "s" : ""}${bestPayout ? `<small>Top pot ${fmt.format(bestPayout)}</small>` : ""}</strong>
@@ -1792,7 +2282,7 @@ function renderPokerReady(players, deadline = 0) {
 }
 
 function renderChat(messages) {
-  const key = messages.map(msg => `${msg.at}:${msg.playerId}:${msg.name}:${msg.text}`).join("|");
+  const key = messages.map(msg => `${msg.at}:${msg.playerId}:${msg.name}:${msg.cosmetics?.frame || ""}:${msg.cosmetics?.emoji || ""}:${msg.text}`).join("|");
   if (key === lastChatKey) return;
   const newUnreadMessages = [];
   messages.forEach(msg => {
@@ -1821,7 +2311,7 @@ function renderChat(messages) {
   const wasNearBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 12;
   setHtmlIfChanged("chatMessages", messages.map(msg => `
     <div class="chat-message${msg.playerId === playerId ? " self" : ""}">
-      <strong>${escapeHtml(msg.name)}</strong>
+      <strong>${cosmeticNameHtml(msg.name, msg.cosmetics)}</strong>
       <span>${escapeHtml(msg.text)}</span>
     </div>
   `).join("") || `<div class="empty-row">Le chat de la table est vide.</div>`);
@@ -1863,6 +2353,31 @@ function bind() {
     $("mainClick").classList.add("chip-hit");
     render();
   });
+  $("dailyTicketNotice").addEventListener("click", openScratchModal);
+  $("scratchClose").addEventListener("click", closeScratchModal);
+  $("scratchModal").addEventListener("click", e => {
+    if (e.target === $("scratchModal")) closeScratchModal();
+  });
+  $("scratchClaim").addEventListener("click", claimScratchTicket);
+  $("scratchReveal").addEventListener("click", revealScratchTicket);
+  $("scratchCanvas").addEventListener("pointerdown", e => {
+    scratchDrawing = true;
+    scratchLastPoint = null;
+    $("scratchCanvas").setPointerCapture(e.pointerId);
+    scratchAt(e.clientX, e.clientY);
+  });
+  $("scratchCanvas").addEventListener("pointermove", e => {
+    if (scratchDrawing) scratchAt(e.clientX, e.clientY);
+  });
+  $("scratchCanvas").addEventListener("pointerup", e => {
+    scratchDrawing = false;
+    scratchLastPoint = null;
+    try { $("scratchCanvas").releasePointerCapture(e.pointerId); } catch {}
+  });
+  $("scratchCanvas").addEventListener("pointercancel", () => {
+    scratchDrawing = false;
+    scratchLastPoint = null;
+  });
   $("upgrades").addEventListener("click", e => {
     const btn = e.target.closest("[data-upgrade]");
     if (!btn) return;
@@ -1874,6 +2389,10 @@ function bind() {
       save();
       render(true);
     }
+  });
+  $("dailyEffectsList").addEventListener("click", e => {
+    const equip = e.target.closest("[data-equip-type]");
+    if (equip) return equipCosmetic(equip.dataset.equipType, equip.dataset.equipId);
   });
   $("spinRoulette").addEventListener("click", playRoulette);
   document.querySelectorAll("[data-stake-step], [data-stake-sub]").forEach(btn => btn.addEventListener("click", () => {

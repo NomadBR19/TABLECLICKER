@@ -76,6 +76,36 @@ class SharedStateStoreTests(unittest.TestCase):
             self.assertEqual(leaderboard[0]["bestScore"], 220)
             self.assertEqual(leaderboard[0]["bestPayout"], 500)
 
+    def test_daily_ticket_can_be_claimed_once_per_day(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.sqlite3")
+            store = SharedStateStore(path)
+            store.initialize()
+
+            inserted, reward = store.claim_daily_ticket("player-1", "2026-04-29", "chips_small", '{"id":"chips_small"}', 10)
+            second_inserted, second_reward = store.claim_daily_ticket("player-1", "2026-04-29", "jackpot", '{"id":"jackpot"}', 20)
+            status = store.load_daily_ticket_status("player-1", "2026-04-29", "2026-04-28")
+
+            self.assertTrue(inserted)
+            self.assertFalse(second_inserted)
+            self.assertEqual(reward["id"], "chips_small")
+            self.assertEqual(second_reward["id"], "chips_small")
+            self.assertFalse(status["available"])
+            self.assertEqual(status["streak"], 1)
+
+    def test_daily_ticket_streak_counts_previous_days(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.sqlite3")
+            store = SharedStateStore(path)
+            store.initialize()
+            store.claim_daily_ticket("player-1", "2026-04-27", "a", "{}", 10)
+            store.claim_daily_ticket("player-1", "2026-04-28", "b", "{}", 20)
+
+            status = store.load_daily_ticket_status("player-1", "2026-04-29", "2026-04-28")
+
+            self.assertTrue(status["available"])
+            self.assertEqual(status["streak"], 2)
+
     def test_bounded_int_rejects_non_finite_values(self):
         self.assertEqual(bounded_int("Infinity", 12, 0), 12)
         self.assertEqual(bounded_int("NaN", 12, 0), 12)

@@ -1,5 +1,6 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+import datetime
 import json
 import os
 import random
@@ -41,6 +42,7 @@ ALLOWED_ACTIONS = {
     "race_score",
     "race_wager",
     "slots_spin",
+    "ticket_claim",
 }
 ALLOWED_EVENT_KINDS = {
     "event",
@@ -58,7 +60,33 @@ ALLOWED_EVENT_KINDS = {
     "bigwin",
     "jackpot",
 }
-ALLOWED_GAME_KINDS = {"roulette", "blackjack", "machine", "poker", "course"}
+ALLOWED_GAME_KINDS = {"roulette", "blackjack", "machine", "poker", "course", "ticket"}
+DEBUG_UNLIMITED_DAILY_TICKETS = False
+DAILY_TICKET_REWARDS = [
+    {"id": "chips_small", "kind": "chips", "label": "Paquet de jetons", "amount": 250, "weight": 28},
+    {"id": "chips_medium", "kind": "chips", "label": "Valise de jetons", "amount": 1500, "weight": 18},
+    {"id": "click_boost", "kind": "boost", "label": "Doigts en feu", "target": "click", "multiplier": 2, "duration": 15 * 60, "weight": 18},
+    {"id": "cps_boost", "kind": "boost", "label": "Croupiers presses", "target": "cps", "multiplier": 1.75, "duration": 15 * 60, "weight": 16},
+    {"id": "upgrade_boost", "kind": "upgrade", "label": "Plan de salle VIP", "upgradeId": "dealer", "levels": 3, "weight": 9},
+    {"id": "frame_felt", "kind": "cosmetic", "label": "Cadre Feutre vert", "cosmeticType": "frame", "itemId": "felt", "rarity": "common", "weight": 8},
+    {"id": "frame_copper", "kind": "cosmetic", "label": "Cadre Cuivre", "cosmeticType": "frame", "itemId": "copper", "rarity": "common", "weight": 7},
+    {"id": "frame_neon", "kind": "cosmetic", "label": "Cadre Neon club", "cosmeticType": "frame", "itemId": "neon", "rarity": "rare", "weight": 4},
+    {"id": "frame_ice", "kind": "cosmetic", "label": "Cadre Glace", "cosmeticType": "frame", "itemId": "ice", "rarity": "rare", "weight": 4},
+    {"id": "frame_rose", "kind": "cosmetic", "label": "Cadre Rose gold", "cosmeticType": "frame", "itemId": "rose", "rarity": "rare", "weight": 4},
+    {"id": "frame_gold", "kind": "cosmetic", "label": "Cadre Or royal", "cosmeticType": "frame", "itemId": "gold", "rarity": "epic", "weight": 2},
+    {"id": "frame_void", "kind": "cosmetic", "label": "Cadre Vide astral", "cosmeticType": "frame", "itemId": "void", "rarity": "epic", "weight": 2},
+    {"id": "frame_glitch", "kind": "cosmetic", "label": "Cadre Glitch", "cosmeticType": "frame", "itemId": "glitch", "rarity": "legendary", "weight": 1},
+    {"id": "frame_diamond", "kind": "cosmetic", "label": "Cadre Diamant noir", "cosmeticType": "frame", "itemId": "diamond", "rarity": "legendary", "weight": 1},
+    {"id": "emoji_clover", "kind": "cosmetic", "label": "Emoji Trefle", "cosmeticType": "emoji", "itemId": "clover", "rarity": "common", "weight": 8},
+    {"id": "emoji_chip", "kind": "cosmetic", "label": "Emoji Jeton", "cosmeticType": "emoji", "itemId": "chip", "rarity": "common", "weight": 7},
+    {"id": "emoji_crown", "kind": "cosmetic", "label": "Emoji Couronne", "cosmeticType": "emoji", "itemId": "crown", "rarity": "rare", "weight": 4},
+    {"id": "emoji_fire", "kind": "cosmetic", "label": "Emoji Flamme", "cosmeticType": "emoji", "itemId": "fire", "rarity": "rare", "weight": 4},
+    {"id": "emoji_star", "kind": "cosmetic", "label": "Emoji Etoile", "cosmeticType": "emoji", "itemId": "star", "rarity": "rare", "weight": 4},
+    {"id": "emoji_diamond", "kind": "cosmetic", "label": "Emoji Diamant", "cosmeticType": "emoji", "itemId": "diamond", "rarity": "epic", "weight": 2},
+    {"id": "emoji_rocket", "kind": "cosmetic", "label": "Emoji Fusee", "cosmeticType": "emoji", "itemId": "rocket", "rarity": "epic", "weight": 2},
+    {"id": "emoji_phoenix", "kind": "cosmetic", "label": "Emoji Phoenix", "cosmeticType": "emoji", "itemId": "phoenix", "rarity": "legendary", "weight": 1},
+    {"id": "jackpot", "kind": "chips", "label": "Gros lot du ticket", "amount": 50000, "weight": 2},
+]
 STATE_LOCK = threading.Lock()
 STORE = SharedStateStore(os.path.join(os.path.dirname(__file__), "shared_state.sqlite3"))
 STORE.initialize()
@@ -85,6 +113,63 @@ def safe_event_kind(value, fallback="event"):
 def safe_game_kind(value):
     game = safe_text(value, "game", 18).lower()
     return game if game in ALLOWED_GAME_KINDS else "game"
+
+
+def safe_cosmetics(value):
+    if not isinstance(value, dict):
+        return {"frame": "", "emoji": ""}
+    return {
+        "frame": safe_text(value.get("frame", ""), "", 24),
+        "emoji": safe_text(value.get("emoji", ""), "", 24),
+    }
+
+
+def today_date():
+    return datetime.date.today()
+
+
+def daily_ticket_status(player_id):
+    today = today_date()
+    return STORE.load_daily_ticket_status(
+        player_id,
+        today.isoformat(),
+        (today - datetime.timedelta(days=1)).isoformat(),
+    )
+
+
+def choose_daily_ticket_reward(player_id, ticket_date, streak=0):
+    seed = f"{player_id}:{ticket_date}:{streak}"
+    rng = random.Random(seed)
+    roll = rng.uniform(0, sum(max(0, reward.get("weight", 0)) for reward in DAILY_TICKET_REWARDS))
+    for reward in DAILY_TICKET_REWARDS:
+        roll -= max(0, reward.get("weight", 0))
+        if roll <= 0:
+            chosen = dict(reward)
+            break
+    else:
+        chosen = dict(DAILY_TICKET_REWARDS[0])
+    chosen.pop("weight", None)
+    if chosen["kind"] == "chips" and streak >= 3:
+        chosen["amount"] = bounded_int(chosen.get("amount", 0) * min(2, 1 + streak * .04), chosen.get("amount", 0), 0)
+    return chosen
+
+
+def claim_daily_ticket(player_id, player_name):
+    status = daily_ticket_status(player_id)
+    reward = choose_daily_ticket_reward(player_id, status["date"], status.get("streak", 0))
+    inserted, row = STORE.claim_daily_ticket(
+        player_id,
+        status["date"],
+        reward["id"],
+        json.dumps(reward, separators=(",", ":")),
+        time.time(),
+    )
+    if not inserted:
+        return None, daily_ticket_status(player_id), "Ticket deja gratte aujourd'hui."
+    add_event(room_state(), f"{player_name} gratte son ticket du jour: {reward['label']}.", "announce")
+    if reward.get("id") == "jackpot":
+        add_big_win(room_state(), player_name, "ticket", reward.get("amount", 0))
+    return reward, daily_ticket_status(player_id), ""
 
 
 def host_name(ip):
@@ -153,7 +238,7 @@ def resolve_slots_spin(room, player_id, player_name, amount):
     }
 
 
-def touch_player(player_id, name, chips, ip="", room=ROOM_NAME):
+def touch_player(player_id, name, chips, ip="", room=ROOM_NAME, cosmetics=None):
     ip = safe_text(ip, "local", 45)
     previous = PLAYERS.get(player_id, {})
     PLAYERS[player_id] = {
@@ -165,6 +250,7 @@ def touch_player(player_id, name, chips, ip="", room=ROOM_NAME):
         "room": ROOM_NAME,
         "seen": time.time(),
         "lastJackpot": previous.get("lastJackpot"),
+        "cosmetics": safe_cosmetics(cosmetics if cosmetics is not None else previous.get("cosmetics")),
     }
 
 
@@ -245,6 +331,7 @@ def public_players(current_id=""):
                 "ip": p.get("ip", ""),
                 "host": p.get("host", ""),
                 "lastJackpot": p.get("lastJackpot"),
+                "cosmetics": p.get("cosmetics", {"frame": "", "emoji": ""}),
                 "room": ROOM_NAME,
                 "self": pid == current_id,
             }
@@ -274,12 +361,13 @@ def add_announcement(room, text):
     add_event(room, text, "announce")
 
 
-def add_chat(room, player_id, name, text):
+def add_chat(room, player_id, name, text, cosmetics=None):
     room["chat"].append({
         "at": time.time(),
         "playerId": safe_player_id(player_id),
         "name": safe_text(name, "Joueur", 18),
         "text": safe_text(text, "", 180),
+        "cosmetics": safe_cosmetics(cosmetics),
     })
     room["chat"] = room["chat"][-MAX_EVENTS:]
 
@@ -760,6 +848,7 @@ class Handler(SimpleHTTPRequestHandler):
             "chips": chips,
             "seen": time.time(),
             "lastJackpot": PLAYERS.get(player_id, {}).get("lastJackpot"),
+            "cosmetics": PLAYERS.get(player_id, {}).get("cosmetics", {"frame": "", "emoji": ""}),
         }
         clean()
         ready_players = room.get("poker_ready", {})
@@ -775,6 +864,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "self": pid == player_id,
                         "pokerReady": pid in ready_players,
                         "lastJackpot": p.get("lastJackpot"),
+                        "cosmetics": p.get("cosmetics", {"frame": "", "emoji": ""}),
                     }
                     for pid, p in room["players"].items()
                 ],
@@ -791,6 +881,7 @@ class Handler(SimpleHTTPRequestHandler):
                 for entry in STORE.load_race_leaderboard(ROOM_NAME)
             ],
             "slots": public_slots(room),
+            "dailyTicket": daily_ticket_status(player_id),
             "lastRace": room.get("last_race"),
             "pokerReady": [
                 {
@@ -818,6 +909,7 @@ class Handler(SimpleHTTPRequestHandler):
         player_id = safe_player_id(payload.get("playerId", "anonymous"))
         name = safe_text(payload.get("name", "Joueur"), "Joueur", 18)
         chips = bounded_int(payload.get("chips", 0), 0, 0)
+        cosmetics = safe_cosmetics(payload.get("cosmetics", {}))
         action = payload.get("action", {})
         if not isinstance(action, dict):
             return self.send_json({"ok": False, "error": "Action invalide."}, 400)
@@ -825,13 +917,13 @@ class Handler(SimpleHTTPRequestHandler):
         if action_type not in ALLOWED_ACTIONS:
             return self.send_json({"ok": False, "error": "Action inconnue."}, 400)
 
-        touch_player(player_id, name, chips, self.client_address[0], ROOM_NAME)
+        touch_player(player_id, name, chips, self.client_address[0], ROOM_NAME, cosmetics)
         room = room_state()
         player = room["players"].setdefault(
             player_id,
-            {"name": name, "chips": chips, "seen": time.time(), "lastJackpot": PLAYERS.get(player_id, {}).get("lastJackpot")},
+            {"name": name, "chips": chips, "seen": time.time(), "lastJackpot": PLAYERS.get(player_id, {}).get("lastJackpot"), "cosmetics": cosmetics},
         )
-        player.update({"name": name, "chips": chips, "seen": time.time(), "lastJackpot": player.get("lastJackpot") or PLAYERS.get(player_id, {}).get("lastJackpot")})
+        player.update({"name": name, "chips": chips, "seen": time.time(), "lastJackpot": player.get("lastJackpot") or PLAYERS.get(player_id, {}).get("lastJackpot"), "cosmetics": cosmetics})
 
         amount = bounded_int(action.get("amount", 0), 0, 0)
         if action_type == "join":
@@ -839,7 +931,7 @@ class Handler(SimpleHTTPRequestHandler):
         elif action_type == "chat":
             text = safe_text(action.get("text", ""), "", 180)
             if text:
-                add_chat(room, player_id, name, text)
+                add_chat(room, player_id, name, text, cosmetics)
         elif action_type == "game":
             game = safe_game_kind(action.get("game", "game"))
             result = safe_text(action.get("result", ""), "", 120)
@@ -944,6 +1036,11 @@ class Handler(SimpleHTTPRequestHandler):
                 traceback.print_exc()
                 return self.send_json({"ok": False, "error": f"Machine indisponible: {exc}"}, 500)
             return self.send_json({"ok": True, **result})
+        elif action_type == "ticket_claim":
+            reward, status, error = claim_daily_ticket(player_id, name)
+            if error:
+                return self.send_json({"ok": False, "error": error, "dailyTicket": status}, 409)
+            return self.send_json({"ok": True, "reward": reward, "dailyTicket": status})
 
         clean()
         self.send_json({"ok": True})

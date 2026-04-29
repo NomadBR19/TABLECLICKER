@@ -41,6 +41,10 @@
           <button id="mainClick" class="chip-button" aria-label="Gagner des jetons">
             <span id="clickValue">+1</span>
           </button>
+          <button id="dailyTicketNotice" class="daily-ticket-notice" hidden>
+            <span>Bonus a gratter</span>
+            <strong id="dailyTicketNoticeText">Disponible</strong>
+          </button>
           <p id="ticker" class="ticker">La table attend ton premier coup.</p>
         </aside>
 
@@ -50,6 +54,7 @@
             <span id="upgradeHint">Autonomie constante</span>
           </div>
           <div id="upgrades" class="upgrade-list"></div>
+          <div id="dailyEffectsList" class="daily-effects-list"></div>
         </section>
       </section>
 
@@ -331,6 +336,34 @@
 
   <div id="players" hidden></div>
   <div id="celebrationLayer" class="celebration-layer" aria-hidden="true"></div>
-  <script src="app.js?v=37"></script>
+  <div id="scratchModal" class="scratch-modal" hidden>
+    <div class="scratch-dialog" role="dialog" aria-modal="true" aria-labelledby="scratchTitle">
+      <button id="scratchClose" class="scratch-close" aria-label="Fermer">X</button>
+      <div class="scratch-card">
+        <div class="scratch-ticket-head">
+          <span>Bonus quotidien</span>
+          <strong id="scratchTitle">A gratter</strong>
+        </div>
+        <div class="scratch-streak">
+          <span id="scratchDate">Aujourd'hui</span>
+          <strong id="scratchStreak">Serie 0</strong>
+        </div>
+        <div id="scratchArea" class="scratch-area">
+          <div class="scratch-reward">
+            <span id="scratchRewardKind">?</span>
+            <strong id="scratchRewardLabel">Gratte pour reveler</strong>
+            <small id="scratchRewardDesc">Un bonus a gratter par jour.</small>
+          </div>
+          <canvas id="scratchCanvas" aria-label="Zone a gratter"></canvas>
+        </div>
+        <div class="scratch-actions">
+          <button id="scratchClaim" class="primary-action">Bonus du jour</button>
+          <button id="scratchReveal" disabled>Reveler</button>
+        </div>
+        <p id="scratchLog">Gratte directement la zone metallisee.</p>
+      </div>
+    </div>
+  </div>
+  <script src="app.js?v=44"></script>
 </body>
 </html>

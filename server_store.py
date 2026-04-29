@@ -1,4 +1,5 @@
 from contextlib import closing
+import datetime
 import sqlite3
 import threading
 
@@ -44,6 +45,15 @@ class SharedStateStore:
                     total_payout INTEGER NOT NULL DEFAULT 0,
                     last_race_at REAL NOT NULL DEFAULT 0,
                     PRIMARY KEY (room_name, player_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_tickets (
+                    player_id TEXT NOT NULL,
+                    ticket_date TEXT NOT NULL,
+                    reward_id TEXT NOT NULL,
+                    reward_payload TEXT NOT NULL,
+                    claimed_at REAL NOT NULL,
+                    PRIMARY KEY (player_id, ticket_date)
                 );
                 """
             )
@@ -186,3 +196,68 @@ class SharedStateStore:
                 (player_id, name, jackpot_amount, jackpot_at),
             )
             conn.commit()
+
+    def load_daily_ticket_status(self, player_id, today, yesterday):
+        with self._lock, closing(self.connect()) as conn:
+            today_row = conn.execute(
+                """
+                SELECT reward_id, reward_payload, claimed_at
+                FROM daily_tickets
+                WHERE player_id = ? AND ticket_date = ?
+                """,
+                (player_id, today),
+            ).fetchone()
+            dates = conn.execute(
+                """
+                SELECT ticket_date
+                FROM daily_tickets
+                WHERE player_id = ?
+                ORDER BY ticket_date DESC
+                LIMIT 60
+                """,
+                (player_id,),
+            ).fetchall()
+        claimed_dates = {row["ticket_date"] for row in dates}
+        streak = 0
+        cursor = today if today in claimed_dates else yesterday
+        while cursor in claimed_dates:
+            streak += 1
+            year, month, day = [int(part) for part in cursor.split("-")]
+            cursor = (datetime.date(year, month, day) - datetime.timedelta(days=1)).isoformat()
+        return {
+            "available": today_row is None,
+            "date": today,
+            "claimed": today_row is not None,
+            "streak": streak,
+            "lastClaimDate": max(claimed_dates) if claimed_dates else "",
+        }
+
+    def claim_daily_ticket(self, player_id, today, reward_id, reward_payload, claimed_at):
+        with self._lock, closing(self.connect()) as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO daily_tickets (player_id, ticket_date, reward_id, reward_payload, claimed_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (player_id, today, reward_id, reward_payload, float(claimed_at)),
+                )
+                conn.commit()
+                inserted = True
+            except sqlite3.IntegrityError:
+                inserted = False
+            row = conn.execute(
+                """
+                SELECT reward_id, reward_payload, claimed_at
+                FROM daily_tickets
+                WHERE player_id = ? AND ticket_date = ?
+                """,
+                (player_id, today),
+            ).fetchone()
+        if not row:
+            return inserted, None
+        return inserted, {
+            "id": row["reward_id"],
+            "payload": row["reward_payload"],
+            "claimedAt": float(row["claimed_at"] or 0),
+        }
